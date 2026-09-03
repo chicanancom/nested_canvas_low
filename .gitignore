@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+dist/
+.vite/
+
+# Rust Target
+target/
+
+# Python Cache & Logs
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+.env
+.venv/
+env/
+venv/
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,16 @@
+[package]
+name = "nestedcanvas"
+version = "0.1.0"
+edition = "2021"
+authors = ["Graphics Engine Specialist <dev@nestedcanvas.io>"]
+description = "High-performance Nested Infinite Canvas Engine in Rust"
+
+[dependencies]
+glam = { version = "0.28", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+uuid = { version = "1.8", features = ["v4", "serde"] }
+
+[dev-dependencies]
+approx = "0.5"

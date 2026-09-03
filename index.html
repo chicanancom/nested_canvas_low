@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nested Infinite Canvas | High-Performance Engine</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <!-- KaTeX for Beautiful High-Precision Mathematical Typography -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css" />
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+    <!-- ONNX Runtime Web for Neural Network Inference in Browser -->
+    <script defer src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.1/dist/ort.min.js"></script>
+    <!-- QRCode JS for instant iPad/Tablet scanning -->
+    <script defer src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+  </head>
+  <body>
+    <div id="app">
+      <!-- Fullscreen Canvas Container -->
+      <div class="canvas-container" id="canvas-container">
+        <canvas id="canvas"></canvas>
+      </div>
+
+      <!-- Top Bar: Brand, Undo/Redo, Telemetry & Export -->
+      <header class="glass-panel top-bar">
+        <div class="brand">
+          <div class="brand-icon">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5">
+              <rect x="3" y="3" width="18" height="18" rx="3" />
+              <rect x="7" y="7" width="7" height="7" rx="1.5" />
+            </svg>
+          </div>
+          <span>NestedCanvas</span>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- History Actions -->
+        <button id="btn-undo" class="tool-btn" title="Undo (Ctrl+Z)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 7v6h6" />
+            <path d="M21 17a9 9 0 00-9-9 9 9 0 00-6 2.3L3 13" />
+          </svg>
+        </button>
+        <button id="btn-redo" class="tool-btn" title="Redo (Ctrl+Y)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 7v6h-6" />
+            <path d="M3 17a9 9 0 019-9 9 9 0 016 2.3L21 13" />
+          </svg>
+        </button>
+
+        <div class="divider"></div>
+
+        <!-- Presets & Actions -->
+        <button id="btn-arrange" class="btn-action" title="Sắp xếp gom gọn tất cả các bảng vào khung nhìn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7" />
+            <rect x="14" y="3" width="7" height="7" />
+            <rect x="14" y="14" width="7" height="7" />
+            <rect x="3" y="14" width="7" height="7" />
+          </svg>
+          Sắp Xếp Bảng
+        </button>
+
+        <button id="btn-add-sample" class="btn-action" title="Thêm bảng học tập mới">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          Thêm Bảng
+        </button>
+
+        <button id="btn-add-desmos" class="btn-action" style="color:#58a6ff; border-color:rgba(88,166,255,0.4);" title="Thêm bảng vẽ đồ thị toán học">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2">
+            <path d="M3 3v18h18" />
+            <path d="M19 9l-5 5-4-4-3 3" />
+          </svg>
+          Đồ Thị
+        </button>
+
+        <button id="btn-insert-image" class="btn-action" title="Chèn ảnh vào bảng hoặc canvas (hoặc dán Ctrl+V)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <circle cx="8.5" cy="8.5" r="1.5" />
+            <polyline points="21 15 16 10 5 21" />
+          </svg>
+          Chèn Ảnh
+        </button>
+
+        <button id="btn-export-png" class="btn-action" title="Xuất toàn bộ khung nhìn ra ảnh PNG">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          Xuất Ảnh
+        </button>
+        <input type="file" id="image-file-input" accept="image/*" style="display:none" />
+
+        <!-- Nút Đồng Bộ Mạng LAN & Kết Nối iPad / Tablet -->
+        <button id="btn-lan-sync" class="btn-action" style="color:#3fb950; border-color:rgba(63,185,80,0.4); display:flex; align-items:center; gap:6px;" title="Kết nối máy tính bảng / iPad qua mạng Wi-Fi cùng phòng">
+          <span id="dot-lan-status" style="width:7px; height:7px; border-radius:50%; background:#3fb950; box-shadow:0 0 6px #3fb950;"></span>
+          <span id="label-lan-presence" style="font-weight:600;">1 Thiết Bị</span>
+        </button>
+
+        <div class="divider"></div>
+
+        <!-- Menu Popover Giao Diện & Màn Chiếu -->
+        <div style="position: relative;">
+          <button id="btn-theme-dropdown" class="btn-action" style="color:#58a6ff; border-color:rgba(88,166,255,0.4); display:flex; align-items:center; gap:6px;" title="Cài đặt phong cách hiển thị màn chiếu">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 3a9 9 0 0 1 9 9 9 9 0 0 1-9 9V3z" fill="currentColor" />
+            </svg>
+            <span id="label-current-theme" style="font-weight:600;">Giao Diện</span>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+
+          <!-- Floating Theme Popover (Glassmorphism) -->
+          <div id="popover-theme-menu" class="glass-panel" style="display:none; position:absolute; top:calc(100% + 8px); right:0; width:270px; z-index:9999; padding:12px; border-radius:10px; box-shadow:0 12px 36px rgba(0,0,0,0.6); border:1px solid rgba(255,255,255,0.15); backdrop-filter:blur(16px); background:rgba(15, 23, 42, 0.94);">
+            <div style="font-size:11px; font-weight:700; color:#f0f6fc; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+              <span>🎨 Phong Cách Màn Chiếu</span>
+              <span style="font-size:9px; font-weight:normal; color:#8b949e;">Áp dụng toàn bộ</span>
+            </div>
+            <div id="theme-swatches" style="display:grid; grid-template-columns:1fr 1fr; gap:5px; margin-bottom:12px;"></div>
+
+            <div style="font-size:11px; font-weight:700; color:#f0f6fc; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
+              <span>▦ Kiểu Lưới Nền</span>
+            </div>
+            <div id="grid-swatches" style="display:grid; grid-template-columns:repeat(4, 1fr); gap:4px;"></div>
+          </div>
+        </div>
+
+        <!-- Real-time Performance Telemetry -->
+        <div class="stats-badge">
+          <div class="stat-item"><span id="stat-active-board" style="color:#58a6ff; font-weight:600;">Chưa chọn bảng</span></div>
+          <div class="divider" style="height:12px;"></div>
+          <div class="stat-item"><span id="stat-nodes" class="stat-val">0</span> Bảng</div>
+          <div class="stat-item"><span id="stat-strokes" class="stat-val">0</span> Nét</div>
+        </div>
+      </header>
+
+      <!-- Left Floating Tool Palette -->
+      <aside class="glass-panel left-toolbar">
+        <button id="tool-select" class="tool-btn" data-tool="select">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 3l7 18 3-7 7-3L3 3z" />
+          </svg>
+          <span class="tooltip">Select / Move (V)</span>
+        </button>
+
+        <button id="tool-pan" class="tool-btn" data-tool="pan">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 11V6a2 2 0 00-2-2v0a2 2 0 00-2 2v3M14 9V4a2 2 0 00-2-2v0a2 2 0 00-2 2v7M10 10.5V6a2 2 0 00-2-2v0a2 2 0 00-2 2v8M6 14a4 4 0 004 4h4a6 6 0 006-6V9a2 2 0 00-2-2v0a2 2 0 00-2 2v6" />
+          </svg>
+          <span class="tooltip">Pan Tool (H / Space)</span>
+        </button>
+
+        <button id="tool-pen" class="tool-btn active" data-tool="pen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 19l7-7 3 3-7 7-3-3z" />
+            <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+            <path d="M2 2l7.586 7.586" />
+            <circle cx="11" cy="11" r="2" />
+          </svg>
+          <span class="tooltip">Vector Pen (P)</span>
+        </button>
+
+        <button id="tool-eraser-object" class="tool-btn" data-tool="eraser-object">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20 20H7L2 15l10-10 8 8-4.5 4.5" />
+            <path d="M14 6l4 4" />
+          </svg>
+          <span class="tooltip">Object Eraser (E)</span>
+        </button>
+
+        <button id="tool-eraser-segment" class="tool-btn" data-tool="eraser-segment">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="9" />
+            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+          </svg>
+          <span class="tooltip">Segment Eraser (Shift+E)</span>
+        </button>
+
+        <div class="divider" style="width: 24px; height: 1px; margin: 4px 0;"></div>
+
+        <button id="tool-ocr" class="tool-btn" data-tool="ocr" style="color: #58a6ff;" title="Khoanh vùng OCR Nhận diện chữ">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 7V4h3M20 7V4h-3M4 17v3h3M20 17v3h-3" />
+            <path d="M9 15l3-7 3 7M10 13h4" />
+          </svg>
+          <span class="tooltip">Khoanh Vùng OCR Nhận Diện Chữ (O)</span>
+        </button>
+      </aside>
+
+      <!-- Bottom Floating Color & Brush Bar -->
+      <div class="glass-panel bottom-bar" id="bottom-bar">
+        <!-- Brush Type Selector -->
+        <div class="brush-types">
+          <button class="brush-tab active" data-brush="solid" title="Bút Mực Trơn">Bút Mực</button>
+          <button class="brush-tab" data-brush="calligraphy" title="Bút Thư Pháp Vát Nghiêng">Thư Pháp</button>
+          <button class="brush-tab" data-brush="neon" title="Bút Dạ Quang Phát Sáng">Dạ Quang</button>
+          <button class="brush-tab" data-brush="chalk" title="Bút Phấn Viết Bảng">Phấn Bảng</button>
+          <button class="brush-tab" data-brush="dashed" title="Nét Đứt Kỹ Thuật">Nét Đứt</button>
+          <button class="brush-tab" data-brush="dotted" title="Nét Chấm Bi">Chấm Bi</button>
+          <button class="brush-tab" data-brush="highlighter" title="Bút Đánh Dấu">Đánh Dấu</button>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- Color Palette -->
+        <div class="color-palette">
+          <div class="color-dot active" style="background-color: #58a6ff" data-color="#58a6ff" title="Xanh Dương"></div>
+          <div class="color-dot" style="background-color: #3fb950" data-color="#3fb950" title="Xanh Lá"></div>
+          <div class="color-dot" style="background-color: #bc8cff" data-color="#bc8cff" title="Tím Neon"></div>
+          <div class="color-dot" style="background-color: #f0883e" data-color="#f0883e" title="Cam"></div>
+          <div class="color-dot" style="background-color: #f85149" data-color="#f85149" title="Đỏ"></div>
+          <div class="color-dot" style="background-color: #f9e2af" data-color="#f9e2af" title="Phấn Vàng"></div>
+          <div class="color-dot" style="background-color: #ffffff" data-color="#ffffff" title="Phấn Trắng"></div>
+          <div class="color-dot" style="background-color: #0f172a; border: 1px solid #64748b;" data-color="#0f172a" title="Mực Đen (Bảng Trắng)"></div>
+          <input type="color" id="custom-color" class="custom-color-input" value="#58a6ff" title="Pick custom color" />
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- Stroke Width Slider -->
+        <div class="size-slider-wrapper">
+          <span class="slider-label" id="brush-size-label">3.0 px</span>
+          <input type="range" id="brush-size" min="1" max="24" step="0.5" value="3.0" />
+        </div>
+      </div>
+
+      <!-- Right Hierarchy Inspector Sidebar -->
+      <aside class="glass-panel inspector-panel" id="inspector-panel">
+        <div class="panel-header">
+          <span>Hierarchy Tree</span>
+          <button id="btn-new-child-canvas" class="btn-icon-sm" title="Add Child Canvas">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+        </div>
+        <div class="tree-list" id="tree-list"></div>
+
+        <!-- Phần Chỉnh Sửa Hàm Số Đồ Thị (Tách riêng biệt, luôn tự động hiện khi chọn Đồ Thị) -->
+        <div id="graph-expressions-section" style="display: none; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px; margin-bottom: 4px;">
+          <div class="panel-header" style="color: #58a6ff;">
+            <span>📊 Hàm Số Đồ Thị</span>
+            <div style="display: flex; gap: 4px;">
+              <button id="btn-add-ocr-expr" style="background: rgba(88,166,255,0.25); border: 1px solid #58a6ff; color: #58a6ff; border-radius: 4px; padding: 2px 6px; font-size: 11px; cursor: pointer; font-weight: 500;" title="Mở bảng viết tay nhận dạng công thức">+ ✍️ Viết Tay</button>
+              <button id="btn-add-expr" style="background: #21262d; border: 1px solid var(--border-subtle); color: #c9d1d9; border-radius: 4px; padding: 2px 6px; font-size: 11px; cursor: pointer;">+ Thêm</button>
+            </div>
+          </div>
+          <div id="graph-expr-list" style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto;"></div>
+          <!-- Presets Nhanh -->
+          <div style="margin-top: 2px;">
+            <span style="font-size: 10px; color: var(--text-muted);">Mẫu Đồ Thị Nhanh:</span>
+            <div id="graph-presets-container" style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;">
+              <button class="preset-btn" data-expr="sin(x)" style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">sin(x)</button>
+              <button class="preset-btn" data-expr="cos(x)" style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">cos(x)</button>
+              <button class="preset-btn" data-expr="x^2 - 4" style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">Parabol x²-4</button>
+              <button class="preset-btn" data-expr="1/x" style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">1/x</button>
+              <button class="preset-btn" data-expr="0.1*x^3 - x" style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">Bậc 3</button>
+              <button class="preset-btn" data-expr="2^x" style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">Mũ 2^x</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-header collapsible" id="header-canvas-properties" title="Bấm để mở rộng / thu gọn thuộc tính">
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <svg id="arrow-canvas-properties" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1); transform: rotate(-90deg);">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+            <span>Canvas Properties</span>
+          </div>
+          <span id="badge-canvas-properties" style="font-size: 10px; font-weight: normal; color: #58a6ff; text-transform: none;"></span>
+        </div>
+        <div id="node-properties" style="font-size: 12px; color: var(--text-muted); display: none; margin-top: 4px;">
+          Nhấp vào một bảng để chỉnh sửa thuộc tính.
+        </div>
+      </aside>
+
+      <!-- Bottom-Right Zoom HUD -->
+      <div class="bottom-right-hud">
+        <div class="glass-panel zoom-controls">
+          <button id="btn-zoom-out" class="zoom-btn" title="Zoom Out (-)">−</button>
+          <span id="zoom-value" class="zoom-val" title="Reset Zoom (0)">100%</span>
+          <button id="btn-zoom-in" class="zoom-btn" title="Zoom In (+)">+</button>
+          <button id="btn-zoom-fit" class="zoom-btn" title="Fit Content (F)">⛶</button>
+        </div>
+      </div>
+
+      <!-- Floating OCR Action Pill (Hiển thị sau khi khoanh vùng OCR) -->
+      <div id="ocr-floating-pill" class="glass-panel ocr-floating-pill" style="display: none;">
+        <div class="ocr-pill-header">
+          <div class="ocr-pill-tag">
+            <span class="ocr-pill-dot"></span>
+            <span id="ocr-pill-model-name">AI OCR (Vi / En)</span>
+          </div>
+          <button id="btn-ocr-pill-close" class="btn-icon-sm" title="Đóng">✕</button>
+        </div>
+        <div id="ocr-pill-text-content" class="ocr-pill-text-content" contenteditable="true" spellcheck="false" title="Bấm vào để chỉnh sửa nhanh nếu muốn"></div>
+        <div class="ocr-pill-actions">
+          <button id="btn-ocr-pill-copy" class="btn-action" title="Sao chép văn bản vào Clipboard">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            Sao Chép
+          </button>
+          <button id="btn-ocr-pill-convert" class="btn-action primary" title="Thay thế nét vẽ bằng bảng văn bản gõ máy">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            ✨ Chuyển Thành Chữ
+          </button>
+        </div>
+      </div>
+
+      <!-- Modal Canvas Viết Tay Nhận Dạng Toán Học (Local Neural Math OCR) -->
+      <div class="math-ocr-modal" id="math-ocr-modal" style="display:none;">
+        <div class="glass-panel math-ocr-dialog">
+          <div class="math-ocr-header">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span style="font-size:16px;">✍️</span>
+              <span style="font-weight:600; font-size:14px; color:#58a6ff;">Viết Tay Công Thức Toán Học</span>
+              <span id="unimernet-status-badge" style="font-size:10px; background:rgba(63,185,80,0.15); color:#3fb950; border:1px solid rgba(63,185,80,0.4); padding:2px 8px; border-radius:10px; font-weight:600;" title="Mô hình Qwen3.5-LaTeX AI trên GPU RTX 5060 Ti">🚀 Qwen3.5-LaTeX AI (GPU Active)</span>
+            </div>
+            <button id="btn-ocr-close" class="btn-icon-sm" title="Đóng">✕</button>
+          </div>
+
+          <!-- Khu vực bảng vẽ viết tay -->
+          <div class="math-ocr-canvas-wrapper">
+            <canvas id="math-ocr-canvas" width="600" height="240"></canvas>
+            <div class="ocr-guide-line"></div>
+          </div>
+
+          <!-- Thanh công cụ viết tay -->
+          <div class="math-ocr-toolbar">
+            <div style="display:flex; gap:6px; align-items:center;">
+              <button id="btn-ocr-pen" class="ocr-tool-btn active" title="Bút vẽ">✏️ Bút</button>
+              <button id="btn-ocr-eraser" class="ocr-tool-btn" title="Tẩy">🧹 Tẩy</button>
+              <button id="btn-ocr-undo" class="ocr-tool-btn" title="Hoàn tác">↶ Hoàn tác</button>
+              <button id="btn-ocr-clear" class="ocr-tool-btn danger" title="Xóa sạch">🗑️ Xóa sạch</button>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <button id="btn-ocr-recognize" class="btn-action" style="background:#58a6ff; border-color:#388bfd; color:#0d1117; font-weight:700; padding:6px 14px; font-size:12px; cursor:pointer; box-shadow:0 0 12px rgba(88,166,255,0.4);" title="Nhấn để gửi nét vẽ đến mô hình GOT-OCR 2.0 nhận diện">
+                ✨ Nhận Diện Công Thức
+              </button>
+              <div class="divider" style="height:14px;"></div>
+              <button id="btn-ocr-preset-sin" class="ocr-preset-btn">sin(x)</button>
+              <button id="btn-ocr-preset-parabol" class="ocr-preset-btn">x² - 4</button>
+              <button id="btn-ocr-preset-frac" class="ocr-preset-btn">1/x</button>
+              <button id="btn-ocr-preset-sqrt" class="ocr-preset-btn">√x</button>
+            </div>
+          </div>
+
+          <!-- Kết quả nhận dạng KaTeX & LaTeX thời gian thực -->
+          <div class="math-ocr-preview-box" style="flex-direction:column; gap:10px; align-items:stretch;">
+            <!-- Render Typography Công Thức Toán Học KaTeX -->
+            <div style="display:flex; justify-content:space-between; align-items:center; background:#0d1117; padding:8px 14px; border-radius:6px; border:1px solid rgba(88,166,255,0.3); min-height:44px;">
+              <div id="ocr-katex-preview" style="color:#f0f6fc; font-size:18px; display:flex; align-items:center;">
+                y = \sin(x)
+              </div>
+              <span id="ocr-latex-tag" style="font-size:10px; font-family:monospace; background:rgba(88,166,255,0.15); color:#58a6ff; padding:2px 6px; border-radius:4px;">LaTeX Mode</span>
+            </div>
+
+            <div style="display:flex; gap:12px; align-items:flex-end;">
+              <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">Mã LaTeX / Biểu thức Desmos:</span>
+                  <span style="font-size:10px; color:#3fb950; cursor:pointer;" id="btn-copy-latex" title="Copy mã LaTeX">📋 Copy LaTeX</span>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span style="font-weight:700; color:#58a6ff; font-size:14px;">y = </span>
+                  <input type="text" id="ocr-result-input" value="sin(x)" style="flex:1; background:#0d1117; border:1px solid #58a6ff; color:#fff; font-family:monospace; font-size:14px; padding:6px 10px; border-radius:6px; outline:none;" />
+                </div>
+              </div>
+              <div style="display:flex; gap:8px;">
+                <button id="btn-ocr-test-live" class="btn-action" style="background:#1f6feb; border-color:#388bfd; color:#fff; font-weight:600; padding:8px 14px; font-size:12px; cursor:pointer;" title="Thử thay đổi ngay vào đồ thị Desmos">
+                  🚀 Thử Ngay
+                </button>
+                <button id="btn-ocr-apply" class="btn-action" style="background:#238636; border-color:#2ea043; color:#fff; font-weight:600; padding:8px 16px; font-size:12px; cursor:pointer;" title="Thay toàn bộ vào biểu thức và đóng">
+                  ✓ Áp Dụng & Đóng
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal Kết Nối Màn Chiếu & Tablet (LAN Sync Dialog) -->
+      <div class="math-ocr-modal" id="modal-lan-sync" style="display:none; align-items:center; justify-content:center;">
+        <div class="glass-panel" style="width: 440px; padding: 24px; border-radius: 14px; box-shadow: 0 20px 50px rgba(0,0,0,0.7); border: 1px solid rgba(255,255,255,0.15); backdrop-filter: blur(20px); background: rgba(15, 23, 42, 0.95); display: flex; flex-direction: column; gap: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 20px;">📱</span>
+              <span style="font-weight: 700; font-size: 15px; color: #58a6ff;">Kết Nối Máy Tính Bảng (LAN Sync)</span>
+            </div>
+            <button id="btn-close-lan-modal" class="btn-icon-sm" style="font-size: 14px; cursor: pointer;">✕</button>
+          </div>
+
+          <div style="color: var(--text-muted); font-size: 12px; line-height: 1.5;">
+            Thầy cô mở iPad/Tablet và <b>kết nối cùng mạng Wi-Fi</b> với máy tính này, sau đó quét mã QR hoặc truy cập đường link bên dưới:
+          </div>
+
+          <!-- Khu vực hiển thị mã QR Code -->
+          <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; background: #ffffff; padding: 16px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.2);">
+            <div id="lan-qrcode" style="width: 180px; height: 180px; display: flex; align-items: center; justify-content: center;"></div>
+            <span style="font-size: 11px; color: #334155; margin-top: 8px; font-weight: 500;">Dùng Camera iPad quét để mở ngay</span>
+          </div>
+
+          <!-- Địa chỉ IP mạng LAN -->
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            <span style="font-size: 11px; color: var(--text-muted); font-weight: 600;">ĐỊA CHỈ TRUY CẬP TRỰC TIẾP:</span>
+            <div style="display: flex; gap: 8px;">
+              <input type="text" id="input-lan-url" readonly style="flex: 1; background: #0d1117; border: 1px solid var(--border-subtle); color: #3fb950; font-family: monospace; font-size: 13px; padding: 8px 12px; border-radius: 6px; font-weight: 600;" value="http://localhost:3000" />
+              <button id="btn-copy-lan-url" class="btn-action primary" style="white-space: nowrap; padding: 8px 14px; cursor: pointer;">Sao Chép</button>
+            </div>
+          </div>
+
+          <!-- Trạng thái kết nối hiện tại -->
+          <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(88,166,255,0.1); border: 1px solid rgba(88,166,255,0.25); padding: 8px 12px; border-radius: 6px; font-size: 11.5px;">
+            <span style="color: #c9d1d9;">Trạng thái đồng bộ:</span>
+            <span id="lan-modal-status-text" style="color: #3fb950; font-weight: 600;">🟢 Đang hoạt động (1 thiết bị)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>
