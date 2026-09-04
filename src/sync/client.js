@@ -1,6 +1,7 @@
 /**
  * NestedCanvas Real-Time LAN Synchronization Client
  * Handles bi-directional WebSocket communication for sub-10ms multi-device collaboration.
+ * Supports room-based / sub-board synchronization.
  */
 
 export class SyncClient {
@@ -15,9 +16,15 @@ export class SyncClient {
     this.reconnectTimer = null;
     this.isManualClose = false;
 
+    // Room / Board state tracking
+    this.joinedBoards = new Set();
+    this.boardPresence = new Map(); // boardId -> count
+
     // Callbacks
     this.onPresenceCallback = options.onPresence || null;
+    this.onBoardPresenceCallback = options.onBoardPresence || null;
     this.onStatusCallback = options.onStatus || null;
+    this.onConnectCallback = options.onConnect || null;
   }
 
   connect() {
@@ -38,6 +45,13 @@ export class SyncClient {
       this.isConnected = true;
       console.log(`[SyncClient] Connected to LAN sync server at ${url}`);
       if (this.onStatusCallback) this.onStatusCallback(true);
+      if (this.onConnectCallback) this.onConnectCallback();
+
+      // Re-join any previously joined boards after reconnect
+      for (const boardId of this.joinedBoards) {
+        this.send('JOIN_BOARD', { boardId });
+      }
+
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
@@ -52,11 +66,18 @@ export class SyncClient {
         if (type === 'WELCOME') {
           this.presenceCount = data.count || 1;
           if (data.local_ip) this.localIp = data.local_ip;
-          if (this.onPresenceCallback) this.onPresenceCallback(this.presenceCount, this.localIp);
+          if (this.onPresenceCallback) this.onPresenceCallback(this.presenceCount, this.localIp, data.shared_boards);
         } else if (type === 'PRESENCE') {
           this.presenceCount = data.count || 1;
           if (data.local_ip) this.localIp = data.local_ip;
-          if (this.onPresenceCallback) this.onPresenceCallback(this.presenceCount, this.localIp);
+          if (this.onPresenceCallback) this.onPresenceCallback(this.presenceCount, this.localIp, data.shared_boards);
+        } else if (type === 'BOARD_PRESENCE') {
+          if (data.boardId) {
+            this.boardPresence.set(data.boardId, data.count || 0);
+            if (this.onBoardPresenceCallback) {
+              this.onBoardPresenceCallback(data.boardId, data.count || 0);
+            }
+          }
         }
 
         this._dispatch(type, data);
@@ -99,6 +120,45 @@ export class SyncClient {
       console.warn('[SyncClient] Send failed:', e);
       return false;
     }
+  }
+
+  // --- Per-Board Room Helpers ---
+  joinBoard(boardId) {
+    if (!boardId) return;
+    this.joinedBoards.add(boardId);
+    this.send('JOIN_BOARD', { boardId });
+  }
+
+  leaveBoard(boardId) {
+    if (!boardId) return;
+    this.joinedBoards.delete(boardId);
+    this.send('LEAVE_BOARD', { boardId });
+  }
+
+  shareBoard(boardId, nodeData, isShared) {
+    if (!boardId) return;
+    this.send('SHARE_BOARD', {
+      boardId,
+      node: nodeData,
+      isShared: !!isShared,
+    });
+  }
+
+  requestBoardState(boardId) {
+    if (!boardId) return;
+    this.send('GET_BOARD_STATE', { boardId });
+  }
+
+  sendBoardState(boardId, nodeData) {
+    if (!boardId || !nodeData) return;
+    this.send('BOARD_STATE', {
+      boardId,
+      node: nodeData,
+    });
+  }
+
+  getBoardPresence(boardId) {
+    return this.boardPresence.get(boardId) || 0;
   }
 
   on(type, handler) {

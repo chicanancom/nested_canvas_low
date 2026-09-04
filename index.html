@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Nested Infinite Canvas | High-Performance Engine</title>
     <link rel="stylesheet" href="/src/style.css" />
     <!-- KaTeX for Beautiful High-Precision Mathematical Typography -->
@@ -387,42 +390,244 @@
         </div>
       </div>
 
-      <!-- Modal Kết Nối Màn Chiếu & Tablet (LAN Sync Dialog) -->
+      <!-- Modal Kết Nối Màn Chiếu & Tablet (LAN Sync Dialog - Chỉ chia sẻ Bảng Con) -->
       <div class="math-ocr-modal" id="modal-lan-sync" style="display:none; align-items:center; justify-content:center;">
-        <div class="glass-panel" style="width: 440px; padding: 24px; border-radius: 14px; box-shadow: 0 20px 50px rgba(0,0,0,0.7); border: 1px solid rgba(255,255,255,0.15); backdrop-filter: blur(20px); background: rgba(15, 23, 42, 0.95); display: flex; flex-direction: column; gap: 16px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px;">
+        <div class="glass-panel" style="width: 480px; max-width: 95vw; padding: 22px; border-radius: 14px; box-shadow: 0 24px 60px rgba(0,0,0,0.75); border: 1px solid rgba(88,166,255,0.25); backdrop-filter: blur(24px); background: rgba(13, 17, 23, 0.96); display: flex; flex-direction: column; gap: 14px; max-height: 90vh; overflow-y: auto;">
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-subtle); padding-bottom: 10px;">
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 20px;">📱</span>
-              <span style="font-weight: 700; font-size: 15px; color: #58a6ff;">Kết Nối Máy Tính Bảng (LAN Sync)</span>
+              <div>
+                <span style="font-weight: 700; font-size: 15px; color: #58a6ff;">Chia Sẻ Bảng Con Cho iPad / Tablet</span>
+                <div style="font-size: 11px; color: var(--text-muted);">Đồng bộ riêng từng bảng con • Không lộ Bảng Mẹ</div>
+              </div>
             </div>
             <button id="btn-close-lan-modal" class="btn-icon-sm" style="font-size: 14px; cursor: pointer;">✕</button>
           </div>
 
-          <div style="color: var(--text-muted); font-size: 12px; line-height: 1.5;">
-            Thầy cô mở iPad/Tablet và <b>kết nối cùng mạng Wi-Fi</b> với máy tính này, sau đó quét mã QR hoặc truy cập đường link bên dưới:
+          <!-- Thông báo bảo mật Bảng Mẹ -->
+          <div style="background: rgba(88,166,255,0.08); border-left: 3px solid #58a6ff; padding: 8px 12px; border-radius: 4px; font-size: 11.5px; color: #c9d1d9; line-height: 1.5;">
+            🔒 <b>Bảo mật Bảng Mẹ:</b> Bảng Mẹ là không gian riêng tư của thầy cô (không bị chia sẻ). Chỉ những <b>Bảng Con</b> được bật chia sẻ mới hiển thị và đồng bộ với iPad/học sinh.
           </div>
 
-          <!-- Khu vực hiển thị mã QR Code -->
-          <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; background: #ffffff; padding: 16px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.2);">
-            <div id="lan-qrcode" style="width: 180px; height: 180px; display: flex; align-items: center; justify-content: center;"></div>
-            <span style="font-size: 11px; color: #334155; margin-top: 8px; font-weight: 500;">Dùng Camera iPad quét để mở ngay</span>
-          </div>
-
-          <!-- Địa chỉ IP mạng LAN -->
+          <!-- Danh sách các Bảng Con để quản lý chia sẻ -->
           <div style="display: flex; flex-direction: column; gap: 6px;">
-            <span style="font-size: 11px; color: var(--text-muted); font-weight: 600;">ĐỊA CHỈ TRUY CẬP TRỰC TIẾP:</span>
+            <span style="font-size: 11px; color: var(--text-muted); font-weight: 600;">DANH SÁCH BẢNG CON TRÊN CANVAS:</span>
+            <div id="lan-child-boards-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 160px; overflow-y: auto;">
+              <!-- Dynamic child boards list -->
+            </div>
+          </div>
+
+          <!-- Khu vực hiển thị mã QR Code của Bảng Con đang chọn -->
+          <div id="lan-qr-section" style="display: flex; flex-direction: column; align-items: center; justify-content: center; background: #ffffff; padding: 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.2);">
+            <div style="font-size: 12px; font-weight: 700; color: #0f172a; margin-bottom: 6px;" id="lan-qr-board-title">Mã QR Bảng Con</div>
+            <div id="lan-qrcode" style="width: 170px; height: 170px; display: flex; align-items: center; justify-content: center;"></div>
+            <span style="font-size: 11px; color: #475569; margin-top: 6px; font-weight: 500;">Dùng Camera iPad quét để vào đúng bảng này</span>
+          </div>
+
+          <!-- Địa chỉ IP mạng LAN của Bảng Con -->
+          <div id="lan-url-section" style="display: flex; flex-direction: column; gap: 6px;">
+            <span style="font-size: 11px; color: var(--text-muted); font-weight: 600;">LINK THAM GIA BẢNG CON NÀY:</span>
             <div style="display: flex; gap: 8px;">
-              <input type="text" id="input-lan-url" readonly style="flex: 1; background: #0d1117; border: 1px solid var(--border-subtle); color: #3fb950; font-family: monospace; font-size: 13px; padding: 8px 12px; border-radius: 6px; font-weight: 600;" value="http://localhost:3000" />
+              <input type="text" id="input-lan-url" readonly style="flex: 1; background: #0d1117; border: 1px solid var(--border-subtle); color: #3fb950; font-family: monospace; font-size: 12.5px; padding: 8px 10px; border-radius: 6px; font-weight: 600;" value="" />
               <button id="btn-copy-lan-url" class="btn-action primary" style="white-space: nowrap; padding: 8px 14px; cursor: pointer;">Sao Chép</button>
             </div>
           </div>
 
           <!-- Trạng thái kết nối hiện tại -->
-          <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(88,166,255,0.1); border: 1px solid rgba(88,166,255,0.25); padding: 8px 12px; border-radius: 6px; font-size: 11.5px;">
-            <span style="color: #c9d1d9;">Trạng thái đồng bộ:</span>
-            <span id="lan-modal-status-text" style="color: #3fb950; font-weight: 600;">🟢 Đang hoạt động (1 thiết bị)</span>
+          <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.04); border: 1px solid var(--border-subtle); padding: 8px 12px; border-radius: 6px; font-size: 11.5px;">
+            <span style="color: #8b949e;">Trạng thái đồng bộ:</span>
+            <span id="lan-modal-status-text" style="color: #3fb950; font-weight: 600;">🟢 Đang hoạt động</span>
           </div>
         </div>
+      </div>
+
+      <!-- Modal Lobby Dành Cho Thiết Bị Ngoài Vào Trực Tiếp URL Gốc (Tránh Lộ Bảng Mẹ) -->
+      <div class="math-ocr-modal" id="modal-remote-lobby" style="display:none; align-items:center; justify-content:center;">
+        <div class="glass-panel" style="width: 440px; max-width: 95vw; padding: 26px; border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,0.8); border: 1px solid rgba(88,166,255,0.3); backdrop-filter: blur(24px); background: rgba(13, 17, 23, 0.98); display: flex; flex-direction: column; gap: 16px;">
+          <div style="display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px;">
+            <span style="font-size: 26px;">🏫</span>
+            <div>
+              <div style="font-weight: 700; font-size: 16px; color: #58a6ff;">Phòng Học Trực Tuyến LAN</div>
+              <div style="font-size: 12px; color: var(--text-muted);">Vào bảng con để học tập và vẽ cùng thầy cô</div>
+            </div>
+          </div>
+
+          <div style="background: rgba(88,166,255,0.08); border-left: 3px solid #58a6ff; padding: 10px 12px; border-radius: 6px; font-size: 12px; color: #c9d1d9; line-height: 1.5;">
+            🔒 <b>Không gian Bảng Mẹ được bảo mật riêng tư.</b> Vui lòng chọn một Bảng Con thầy cô đang chia sẻ bên dưới để tham gia:
+          </div>
+
+          <div id="remote-lobby-boards-container" style="display: flex; flex-direction: column; gap: 8px;">
+            <!-- Render danh sách bảng con đang chia sẻ -->
+          </div>
+
+          <div style="border-top: 1px solid var(--border-subtle); padding-top: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-muted);">
+            <span>Nếu bạn là giáo viên/chủ trì:</span>
+            <button id="btn-unlock-host-role" style="background: none; border: none; color: #58a6ff; cursor: pointer; text-decoration: underline; font-size: 11px;">Mở Canvas Mẹ (Host)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal Chia Sẻ Từng Bảng Con Qua Socket (Board Share Dialog) -->
+      <div class="math-ocr-modal" id="modal-board-share" style="display:none; align-items:center; justify-content:center;">
+        <div class="glass-panel" style="width: 440px; padding: 22px; border-radius: 14px; box-shadow: 0 24px 60px rgba(0,0,0,0.75); border: 1px solid rgba(88,166,255,0.25); backdrop-filter: blur(24px); background: rgba(13, 17, 23, 0.96); display: flex; flex-direction: column; gap: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-subtle); padding-bottom: 10px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 20px;">📡</span>
+              <div>
+                <span style="font-weight: 700; font-size: 14.5px; color: #58a6ff;" id="board-share-title">Chia Sẻ Bảng Con</span>
+                <div style="font-size: 11px; color: var(--text-muted);" id="board-share-subtitle">Đồng bộ socket độc lập cho bảng này</div>
+              </div>
+            </div>
+            <button id="btn-close-board-share" class="btn-icon-sm" style="font-size: 14px; cursor: pointer;">✕</button>
+          </div>
+
+          <!-- Bật / Tắt chia sẻ bảng này -->
+          <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.04); padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-subtle);">
+            <div>
+              <div style="font-size: 12.5px; font-weight: 600; color: #f0f6fc;">Kích hoạt chia sẻ qua Socket</div>
+              <div style="font-size: 11px; color: var(--text-muted);">Chỉ những người có link mới có thể vẽ và xem bảng này</div>
+            </div>
+            <label class="switch-toggle" style="position: relative; display: inline-block; width: 44px; height: 24px; cursor: pointer;">
+              <input type="checkbox" id="toggle-board-share" style="opacity: 0; width: 0; height: 0;">
+              <span class="slider-round" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #30363d; transition: .3s; border-radius: 24px; border: 1px solid rgba(255,255,255,0.15);"></span>
+            </label>
+          </div>
+
+          <!-- Chi tiết chia sẻ (hiện khi bật) -->
+          <div id="board-share-details" style="display: flex; flex-direction: column; gap: 12px;">
+            <!-- Mã QR riêng của bảng con -->
+            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; background: #ffffff; padding: 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.2);">
+              <div id="board-share-qrcode" style="width: 170px; height: 170px; display: flex; align-items: center; justify-content: center;"></div>
+              <span style="font-size: 11px; color: #334155; margin-top: 6px; font-weight: 600;">Quét mã trên iPad để mở trực tiếp bảng con này</span>
+            </div>
+
+            <!-- Đường dẫn URL trực tiếp -->
+            <div style="display: flex; flex-direction: column; gap: 5px;">
+              <span style="font-size: 10.5px; color: var(--text-muted); font-weight: 600; text-transform: uppercase;">Liên kết trực tiếp tới bảng con:</span>
+              <div style="display: flex; gap: 8px;">
+                <input type="text" id="input-board-share-url" readonly style="flex: 1; background: #090d13; border: 1px solid rgba(88,166,255,0.3); color: #3fb950; font-family: monospace; font-size: 12px; padding: 7px 10px; border-radius: 6px; font-weight: 600;" value="" />
+                <button id="btn-copy-board-url" class="btn-action primary" style="white-space: nowrap; padding: 7px 12px; cursor: pointer; font-size: 11.5px;">Sao Chép</button>
+              </div>
+            </div>
+
+            <!-- Nút mở tab mới để kiểm tra ngay -->
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <a id="link-open-board-tab" href="#" target="_blank" style="color: #58a6ff; font-size: 11.5px; text-decoration: none; display: flex; align-items: center; gap: 4px;">
+                <span>🔗 Mở thử bảng này trong tab mới</span>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg>
+              </a>
+
+              <span id="board-presence-badge" style="font-size: 11px; color: #3fb950; font-weight: 600; background: rgba(63,185,80,0.12); padding: 3px 8px; border-radius: 12px; border: 1px solid rgba(63,185,80,0.3);">
+                🟢 1 thiết bị
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Single Board View Mode Notification Pill (Chế độ xem bảng con) -->
+      <div id="single-board-banner" class="glass-panel" style="display: none; position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 100; padding: 6px 16px; border-radius: 30px; display: none; align-items: center; gap: 12px; border: 1px solid rgba(88,166,255,0.4); background: rgba(13,17,23,0.92); box-shadow: 0 8px 32px rgba(0,0,0,0.6);">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #3fb950; box-shadow: 0 0 8px #3fb950;"></span>
+          <span style="font-weight: 600; font-size: 13px; color: #f0f6fc;" id="single-board-name">Bảng Con Đang Đồng Bộ</span>
+          <span id="single-board-presence" style="font-size: 11px; color: #8b949e;">(Đang kết nối)</span>
+        </div>
+        <div class="divider" style="height: 16px;"></div>
+        <button id="btn-single-board-fit" class="btn-action" style="padding: 3px 10px; font-size: 11.5px; border-radius: 14px;" title="Căn chỉnh vừa màn hình">⛶ Căn Giữa</button>
+        <button id="btn-single-board-exit" class="btn-action" style="padding: 3px 10px; font-size: 11.5px; border-radius: 14px; color: #f85149; border-color: rgba(248,81,73,0.3);" title="Chuyển sang chế độ toàn cảnh">Toàn Cảnh</button>
+      </div>
+
+      <!-- GIAO DIỆN CHIA SẺ ĐIỆN THOẠI (Mobile Collaboration UI) -->
+      <div id="mobile-single-board-ui" class="mobile-board-container" style="display: none;">
+        <!-- Top Bar dành riêng cho màn hình điện thoại -->
+        <header class="mobile-top-bar glass-panel">
+          <div class="mobile-top-left">
+            <button id="btn-mobile-exit" class="mobile-icon-btn" title="Trở về chế độ toàn cảnh">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 18l-6-6 6-6"/></svg>
+            </button>
+            <div class="mobile-board-info">
+              <span class="mobile-board-title" id="mobile-board-name">Bảng Con</span>
+              <span class="mobile-board-status">
+                <span class="mobile-live-dot"></span>
+                <span id="mobile-board-presence">1 thiết bị</span>
+              </span>
+            </div>
+          </div>
+
+          <div class="mobile-top-right">
+            <button id="btn-mobile-undo" class="mobile-icon-btn" title="Hoàn tác (Undo)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 00-9-9 9 9 0 00-6 2.3L3 13"/></svg>
+            </button>
+            <button id="btn-mobile-redo" class="mobile-icon-btn" title="Làm lại (Redo)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 019-9 9 9 0 016 2.3L21 13"/></svg>
+            </button>
+            <button id="btn-mobile-zoom-out" class="mobile-icon-btn" title="Thu nhỏ (-)">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14"/></svg>
+            </button>
+            <button id="btn-mobile-zoom-in" class="mobile-icon-btn" title="Phóng to (+)">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+            <button id="btn-mobile-fit" class="mobile-icon-btn" title="Căn giữa màn hình điện thoại">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>
+            </button>
+            <button id="btn-mobile-clear" class="mobile-icon-btn danger" title="Xóa toàn bộ nét trên bảng">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+            </button>
+          </div>
+        </header>
+
+        <!-- Thanh công cụ nổi phía dưới ngón tay cái (Mobile Bottom Bar) -->
+        <footer class="mobile-bottom-bar glass-panel">
+          <!-- Hàng chọn Màu Sắc & Cỡ Nét -->
+          <div class="mobile-palette-drawer" id="mobile-palette-drawer">
+            <div class="mobile-color-dots">
+              <div class="mobile-color-dot active" data-color="#58a6ff" style="background:#58a6ff;"></div>
+              <div class="mobile-color-dot" data-color="#3fb950" style="background:#3fb950;"></div>
+              <div class="mobile-color-dot" data-color="#bc8cff" style="background:#bc8cff;"></div>
+              <div class="mobile-color-dot" data-color="#f0883e" style="background:#f0883e;"></div>
+              <div class="mobile-color-dot" data-color="#f85149" style="background:#f85149;"></div>
+              <div class="mobile-color-dot" data-color="#f9e2af" style="background:#f9e2af;"></div>
+              <div class="mobile-color-dot" data-color="#ffffff" style="background:#ffffff;"></div>
+              <div class="mobile-color-dot" data-color="#0f172a" style="background:#0f172a; border:1px solid #484f58;"></div>
+            </div>
+
+            <div class="mobile-divider"></div>
+
+            <div class="mobile-size-pills">
+              <button class="mobile-size-pill" data-size="2.0">Mảnh</button>
+              <button class="mobile-size-pill active" data-size="3.5">Vừa</button>
+              <button class="mobile-size-pill" data-size="7.0">Đậm</button>
+            </div>
+          </div>
+
+          <!-- Hàng các công cụ vẽ ngón tay cái thao tác nhanh -->
+          <div class="mobile-tools-row">
+            <button id="mobile-tool-pen" class="mobile-tool-btn active" data-tool="pen">
+              <span class="mobile-tool-icon">✏️</span>
+              <span class="mobile-tool-label">Bút vẽ</span>
+            </button>
+
+            <button id="mobile-tool-brush-toggle" class="mobile-tool-btn" title="Đổi loại bút">
+              <span class="mobile-tool-icon" id="mobile-brush-icon">✒️</span>
+              <span class="mobile-tool-label" id="mobile-brush-label">Bút Mực</span>
+            </button>
+
+            <button id="mobile-tool-eraser" class="mobile-tool-btn" data-tool="eraser-object">
+              <span class="mobile-tool-icon">🧹</span>
+              <span class="mobile-tool-label">Tẩy nét</span>
+            </button>
+
+            <button id="mobile-tool-pan" class="mobile-tool-btn" data-tool="pan">
+              <span class="mobile-tool-icon">✋</span>
+              <span class="mobile-tool-label">Kéo bảng</span>
+            </button>
+
+            <button id="mobile-btn-palette-toggle" class="mobile-tool-btn active-color-btn" title="Màu sắc & Cỡ nét">
+              <span class="mobile-color-preview-circle" id="mobile-current-color-dot" style="background:#58a6ff;"></span>
+              <span class="mobile-tool-label">Màu & Cỡ</span>
+            </button>
+          </div>
+        </footer>
       </div>
     </div>
 

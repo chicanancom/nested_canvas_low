@@ -1,9 +1,9 @@
-import { AABB, Transform2D, Vec2 } from './math.js';
+import { AABB, Transform2D, Vec2, generateUUID } from './math.js';
 import { Point2D } from './smoothing.js';
 
 export class Stroke {
   constructor(points = [], color = '#388bfd', baseWidth = 3.0, brushType = 'solid') {
-    this.id = crypto.randomUUID();
+    this.id = generateUUID();
     this.points = points;
     this.color = color;
     this.baseWidth = baseWidth;
@@ -96,7 +96,7 @@ import { HistoryManager } from './history.js';
 
 export class ImageElement {
   constructor(img, x, y, width, height) {
-    this.id = crypto.randomUUID();
+    this.id = generateUUID();
     this.img = img;
     this.x = x;
     this.y = y;
@@ -112,7 +112,7 @@ export class ImageElement {
 
 export class CanvasNode {
   constructor(name = 'Sub Canvas', width = 600, height = 450, transform = Transform2D.identity(), image = null, graphData = null, style = 'chalkboard', gridType = 'grid') {
-    this.id = crypto.randomUUID();
+    this.id = generateUUID();
     this.name = name;
     this.width = Math.max(100, width);
     this.height = Math.max(100, height);
@@ -129,6 +129,7 @@ export class CanvasNode {
     this.textContent = null; // Chuỗi văn bản nếu canvas này là bảng văn bản OCR/Note
     this.textConfig = { fontSize: 16, color: '#f0f6fc', font: 'Inter, sans-serif' };
     this.history = new HistoryManager(50); // Lịch sử Undo/Redo riêng biệt cho từng bảng
+    this.isShared = false; // Trạng thái chia sẻ qua socket LAN của bảng con này
   }
 
   localContentTransform() {
@@ -260,6 +261,7 @@ export class CanvasNode {
       elements: (this.elements || []).map((s) => s.toJSON()),
       children: (this.children || []).map((c) => c.toJSON()),
       textContent: this.textContent,
+      isShared: !!this.isShared,
     };
   }
 
@@ -284,6 +286,7 @@ export class CanvasNode {
       data.gridType
     );
     if (data.id) node.id = data.id;
+    if (data.isShared !== undefined) node.isShared = !!data.isShared;
     if (data.contentPan) node.contentPan = new Vec2(data.contentPan.x, data.contentPan.y);
     if (data.contentZoom) node.contentZoom = data.contentZoom;
     if (data.textContent) node.textContent = data.textContent;
@@ -321,6 +324,10 @@ export class SceneGraph {
 
   getNode(id) {
     return this.root.findNode(id);
+  }
+
+  findParentNode(childId) {
+    return this.root.findParentNode(childId);
   }
 
   computeWorldTransform(targetId) {

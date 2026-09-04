@@ -701,6 +701,81 @@ export class CanvasRenderer {
         ctx.lineTo(btnImgX + 4, centerY - 2);
         ctx.stroke();
       }
+
+      // 0. Nút Chia Sẻ Bảng Qua Socket LAN (Share Board 📡)
+      if (width >= 170) {
+        const btnShareX = minX + width - 144;
+        const isShared = !!node.isShared;
+        ctx.fillStyle = isShared ? 'rgba(63, 185, 80, 0.25)' : (isSelected ? 'rgba(88, 166, 255, 0.18)' : 'rgba(255, 255, 255, 0.06)');
+        ctx.beginPath();
+        ctx.roundRect(btnShareX - 8, centerY - 8, 16, 16, 4);
+        ctx.fill();
+
+        ctx.strokeStyle = isShared ? '#3fb950' : (isSelected ? '#58a6ff' : '#94a3b8');
+        ctx.lineWidth = 1.2;
+
+        // Vẽ biểu tượng sóng phát tín hiệu Wi-Fi / Socket
+        ctx.beginPath();
+        // Tâm phát sóng
+        ctx.arc(btnShareX, centerY + 2.5, 1.2, 0, Math.PI * 2);
+        ctx.fillStyle = isShared ? '#3fb950' : (isSelected ? '#58a6ff' : '#94a3b8');
+        ctx.fill();
+
+        // Cung sóng trong
+        ctx.beginPath();
+        ctx.arc(btnShareX, centerY + 2.5, 3.5, -Math.PI * 0.8, -Math.PI * 0.2);
+        ctx.stroke();
+
+        // Cung sóng ngoài
+        ctx.beginPath();
+        ctx.arc(btnShareX, centerY + 2.5, 5.5, -Math.PI * 0.85, -Math.PI * 0.15);
+        ctx.stroke();
+
+        // Nếu đang chia sẻ: thêm chấm tròn xanh phát sáng báo trạng thái LIVE
+        if (isShared) {
+          ctx.beginPath();
+          ctx.arc(btnShareX + 5, centerY - 5, 2.5, 0, Math.PI * 2);
+          ctx.fillStyle = '#3fb950';
+          ctx.fill();
+        }
+      }
+
+      // -1. Nút Thêm Bảng Con Lồng Bên Trong (Add Child Board ＋📋)
+      if (width >= 194) {
+        const btnAddChildX = minX + width - 166;
+        ctx.fillStyle = isSelected ? 'rgba(56, 139, 253, 0.18)' : 'rgba(255, 255, 255, 0.06)';
+        ctx.beginPath();
+        ctx.roundRect(btnAddChildX - 8, centerY - 8, 16, 16, 4);
+        ctx.fill();
+
+        ctx.strokeStyle = isSelected ? '#58a6ff' : '#94a3b8';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.moveTo(btnAddChildX - 4, centerY);
+        ctx.lineTo(btnAddChildX + 4, centerY);
+        ctx.moveTo(btnAddChildX, centerY - 4);
+        ctx.lineTo(btnAddChildX, centerY + 4);
+        ctx.stroke();
+      }
+
+      // -2. Nút Thêm Đồ Thị Con Lồng Bên Trong (Add Graph Board ＋📈)
+      if (width >= 218) {
+        const btnAddGraphX = minX + width - 188;
+        ctx.fillStyle = isSelected ? 'rgba(63, 185, 80, 0.18)' : 'rgba(255, 255, 255, 0.06)';
+        ctx.beginPath();
+        ctx.roundRect(btnAddGraphX - 8, centerY - 8, 16, 16, 4);
+        ctx.fill();
+
+        ctx.strokeStyle = isSelected ? '#3fb950' : '#94a3b8';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.moveTo(btnAddGraphX - 4.5, centerY - 3.5);
+        ctx.lineTo(btnAddGraphX - 4.5, centerY + 3.5);
+        ctx.lineTo(btnAddGraphX + 4.5, centerY + 3.5);
+        ctx.moveTo(btnAddGraphX - 3.5, centerY + 1);
+        ctx.quadraticCurveTo(btnAddGraphX, centerY + 3.5, btnAddGraphX + 3.5, centerY - 2.5);
+        ctx.stroke();
+      }
     }
 
     // 3. Board Inner Writing Area (Lưới Ô Ly Toạ Độ hoặc Hình Ảnh nền)
@@ -1003,6 +1078,14 @@ export class CanvasRenderer {
     const scale = Math.hypot(transform.a, transform.b) || 1.0;
     const brushType = stroke.brushType || 'solid';
 
+    // Safely pre-transform points into screen coordinates
+    const screenPoints = new Array(len);
+    for (let i = 0; i < len; i++) {
+      const p = pts[i];
+      const rawPt = p && p.pos ? p.pos : p;
+      screenPoints[i] = rawPt ? transform.transformPoint(rawPt) : new Vec2(0, 0);
+    }
+
     if (brushType === 'highlighter') {
       ctx.globalAlpha = 0.4;
       ctx.globalCompositeOperation = 'source-over';
@@ -1012,11 +1095,9 @@ export class CanvasRenderer {
       ctx.lineWidth = Math.max(6, baseW * scale * 3.5);
 
       ctx.beginPath();
-      const p0 = transform.transformPoint(pts[0].pos);
-      ctx.moveTo(p0.x, p0.y);
+      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
       for (let i = 1; i < len; i++) {
-        const p = transform.transformPoint(pts[i].pos);
-        ctx.lineTo(p.x, p.y);
+        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
       }
       ctx.stroke();
     } else if (brushType === 'neon') {
@@ -1030,11 +1111,9 @@ export class CanvasRenderer {
       ctx.strokeStyle = stroke.color;
       ctx.lineWidth = Math.max(2, baseW * scale * 1.5);
       ctx.beginPath();
-      const p0 = transform.transformPoint(pts[0].pos);
-      ctx.moveTo(p0.x, p0.y);
+      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
       for (let i = 1; i < len; i++) {
-        const p = transform.transformPoint(pts[i].pos);
-        ctx.lineTo(p.x, p.y);
+        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
       }
       ctx.stroke();
 
@@ -1051,11 +1130,9 @@ export class CanvasRenderer {
       ctx.lineWidth = Math.max(0.8, baseW * scale);
 
       ctx.beginPath();
-      const p0 = transform.transformPoint(pts[0].pos);
-      ctx.moveTo(p0.x, p0.y);
+      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
       for (let i = 1; i < len; i++) {
-        const p = transform.transformPoint(pts[i].pos);
-        ctx.lineTo(p.x, p.y);
+        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
       }
       ctx.stroke();
     } else if (brushType === 'dotted') {
@@ -1066,11 +1143,9 @@ export class CanvasRenderer {
       ctx.lineWidth = Math.max(1.2, baseW * scale);
 
       ctx.beginPath();
-      const p0 = transform.transformPoint(pts[0].pos);
-      ctx.moveTo(p0.x, p0.y);
+      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
       for (let i = 1; i < len; i++) {
-        const p = transform.transformPoint(pts[i].pos);
-        ctx.lineTo(p.x, p.y);
+        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
       }
       ctx.stroke();
     } else if (brushType === 'chalk') {
@@ -1083,11 +1158,9 @@ export class CanvasRenderer {
       ctx.lineWidth = Math.max(1, baseW * scale * 1.15);
 
       ctx.beginPath();
-      const p0 = transform.transformPoint(pts[0].pos);
-      ctx.moveTo(p0.x, p0.y);
+      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
       for (let i = 1; i < len; i++) {
-        const p = transform.transformPoint(pts[i].pos);
-        ctx.lineTo(p.x, p.y);
+        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
       }
       ctx.stroke();
     } else if (brushType === 'calligraphy') {
@@ -1097,8 +1170,8 @@ export class CanvasRenderer {
       ctx.lineJoin = 'round';
 
       for (let i = 0; i < len - 1; i++) {
-        const pA = transform.transformPoint(pts[i].pos);
-        const pB = transform.transformPoint(pts[i + 1].pos);
+        const pA = screenPoints[i];
+        const pB = screenPoints[i + 1];
         const dx = pB.x - pA.x;
         const dy = pB.y - pA.y;
         const angle = Math.atan2(dy, dx);
@@ -1120,11 +1193,9 @@ export class CanvasRenderer {
       ctx.lineWidth = Math.max(0.5, baseW * scale);
 
       ctx.beginPath();
-      const p0 = transform.transformPoint(pts[0].pos);
-      ctx.moveTo(p0.x, p0.y);
+      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
       for (let i = 1; i < len; i++) {
-        const p = transform.transformPoint(pts[i].pos);
-        ctx.lineTo(p.x, p.y);
+        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
       }
       ctx.stroke();
     }
