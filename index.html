@@ -192,6 +192,19 @@
           </svg>
           <span class="tooltip">Khoanh Vùng OCR Nhận Diện Chữ (O)</span>
         </button>
+
+        <button id="tool-multipoint" class="tool-btn" title="Chế độ vẽ đa điểm / Multi-touch (M) - Nhiều ngón cùng vẽ đồng thời trên Android">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0" />
+            <path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2" />
+            <path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8" />
+            <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" />
+            <circle cx="12" cy="1.5" r="1" fill="currentColor" />
+            <circle cx="16" cy="3.5" r="1" fill="currentColor" />
+            <circle cx="8" cy="3.5" r="1" fill="currentColor" />
+          </svg>
+          <span class="tooltip">Vẽ Đa Điểm (M)</span>
+        </button>
       </aside>
 
       <!-- Bottom Floating Color & Brush Bar -->
@@ -229,6 +242,21 @@
           <span class="slider-label" id="brush-size-label">3.0 px</span>
           <input type="range" id="brush-size" min="1" max="24" step="0.5" value="3.0" />
         </div>
+
+        <div class="divider"></div>
+
+        <!-- Multi-touch Drawing Mode Toggle Button -->
+        <button id="btn-toggle-multipoint" class="btn-multipoint-toggle" title="Bật/Tắt chế độ vẽ đa điểm (Hỗ trợ màn hình Android & cảm ứng)">
+          <span class="multipoint-badge">🖐️</span>
+          <span class="multipoint-label">Đa Điểm: <strong id="multipoint-status-text">TẮT</strong></span>
+        </button>
+      </div>
+
+      <!-- Floating HUD Badge for Multi-touch Mode -->
+      <div id="multipoint-hud" class="multipoint-hud" style="display:none;">
+        <span class="hud-icon">🖐️</span>
+        <span class="hud-text">Chế độ Vẽ Đa Điểm (Android / Cảm ứng)</span>
+        <button id="btn-hud-multipoint-toggle" class="hud-action-btn" title="Chuyển về cử chỉ chuẩn">Tắt</button>
       </div>
 
       <!-- Right Hierarchy Inspector Sidebar -->
@@ -620,6 +648,11 @@
             <button id="mobile-tool-pan" class="mobile-tool-btn" data-tool="pan">
               <span class="mobile-tool-icon">✋</span>
               <span class="mobile-tool-label">Kéo bảng</span>
+            </button>
+
+            <button id="mobile-tool-multipoint" class="mobile-tool-btn" title="Bật/Tắt chế độ vẽ đa điểm">
+              <span class="mobile-tool-icon">🖐️</span>
+              <span class="mobile-tool-label" id="mobile-multipoint-label">Đa điểm</span>
             </button>
 
             <button id="mobile-btn-palette-toggle" class="mobile-tool-btn active-color-btn" title="Màu sắc & Cỡ nét">

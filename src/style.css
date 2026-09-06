@@ -1069,6 +1069,123 @@ canvas {
   }
 }
 
+/* Multi-touch Drawing Mode Controls */
+.btn-multipoint-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.btn-multipoint-toggle:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-main);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.btn-multipoint-toggle.active {
+  background: rgba(63, 185, 80, 0.18);
+  border-color: #3fb950;
+  color: #3fb950;
+  box-shadow: 0 0 10px rgba(63, 185, 80, 0.4);
+}
+
+.btn-multipoint-toggle.active strong {
+  color: #3fb950;
+  text-shadow: 0 0 8px rgba(63, 185, 80, 0.5);
+}
+
+#tool-multipoint.active {
+  background: rgba(63, 185, 80, 0.18);
+  border-color: #3fb950;
+  color: #3fb950;
+  box-shadow: 0 0 12px rgba(63, 185, 80, 0.45);
+}
+
+.mobile-tool-btn.active#mobile-tool-multipoint {
+  background: rgba(63, 185, 80, 0.22);
+  border-color: #3fb950;
+  color: #3fb950;
+  box-shadow: 0 0 8px rgba(63, 185, 80, 0.4);
+}
+
+/* Floating Multi-touch HUD Badge */
+.multipoint-hud {
+  position: absolute;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(63, 185, 80, 0.5);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 16px rgba(63, 185, 80, 0.25);
+  backdrop-filter: blur(12px);
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #f0f6fc;
+  z-index: 1000;
+  pointer-events: auto;
+  animation: hudFadeIn 0.25s ease-out;
+}
+
+@keyframes hudFadeIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.hud-icon {
+  font-size: 14px;
+  display: inline-block;
+  animation: pulseTouch 2s infinite ease-in-out;
+}
+
+@keyframes pulseTouch {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.18); }
+}
+
+.hud-text {
+  color: #e6edf3;
+  letter-spacing: 0.2px;
+}
+
+.hud-action-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #f0f6fc;
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.hud-action-btn:hover {
+  background: rgba(248, 81, 73, 0.25);
+  border-color: #f85149;
+  color: #ff7b72;
+}
+
+
 
 
 

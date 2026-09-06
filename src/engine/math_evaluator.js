@@ -1,3 +1,5 @@
+import { LatexEngine } from './latex_engine.js';
+
 /**
  * High-performance safe mathematical formula evaluator for Desmos Graphing Canvas.
  * Supports standard algebraic and trigonometric functions:
@@ -5,7 +7,7 @@
  */
 export class MathEvaluator {
   /**
-   * Compiles a string formula like "sin(x) + cos(2x)" or "x^2 - 4" into a fast evaluator function.
+   * Compiles a string formula like "sin(x) + cos(2x)", "\vert - 25 \vert x" or "x^2 - 4" into a fast evaluator function.
    * @param {string} exprStr 
    * @returns {function(number, object): number}
    */
@@ -18,10 +20,17 @@ export class MathEvaluator {
     // Remove "y =" or "f(x) =" prefix if present
     clean = clean.replace(/^(y|f\(x\))\s*=\s*/i, '');
 
+    // If expression contains LaTeX backslash, pipe absolute values, or LaTeX braces, convert via LatexEngine
+    if (clean.includes('\\') || clean.includes('|') || clean.includes('{')) {
+      clean = LatexEngine.latexToDesmos(clean);
+    } else {
+      clean = LatexEngine.parseAbsoluteValues(clean);
+    }
+
     // Replace '^' with '**'
     clean = clean.replace(/\^/g, '**');
 
-    // Replace implicit multiplications like 2x -> 2*x, 3sin(x) -> 3*Math.sin(x), (x+1)(x-2) -> (x+1)*(x-2)
+    // Replace implicit multiplications like 2x -> 2*x, 3sin(x) -> 3*Math.sin(x), (x+1)(x-2) -> (x+1)*(x-2), )x -> )*x
     clean = clean.replace(/(\d+)\s*([a-zA-Z\(])/g, '$1 * $2');
     clean = clean.replace(/(\))\s*([\d\w\(])/g, '$1 * $2');
 

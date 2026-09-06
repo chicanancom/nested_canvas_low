@@ -95,6 +95,37 @@ export class LatexEngine {
   }
 
   /**
+   * Parses LaTeX and standard absolute value expressions:
+   * \vert x \vert, \lvert x \rvert, \left| x \right|, |x|, \abs{x} -> abs(...)
+   */
+  static parseAbsoluteValues(str) {
+    if (!str || typeof str !== 'string') return str;
+    let s = str;
+    s = s.replace(/\\left\s*\\lvert/g, '|');
+    s = s.replace(/\\right\s*\\rvert/g, '|');
+    s = s.replace(/\\left\s*\\vert/g, '|');
+    s = s.replace(/\\right\s*\\vert/g, '|');
+    s = s.replace(/\\left\s*\\\|/g, '|');
+    s = s.replace(/\\right\s*\\\|/g, '|');
+    s = s.replace(/\\left\s*\|/g, '|');
+    s = s.replace(/\\right\s*\|/g, '|');
+    s = s.replace(/\\(lvert|rvert|vert|lVert|rVert|Vert)\b/g, '|');
+    s = s.replace(/\\abs\s*\{([^{}]+)\}/g, 'abs($1)');
+    s = s.replace(/\\operatorname\{abs\}\s*\(([^()]+)\)/g, 'abs($1)');
+
+    // Iteratively replace innermost |...| pairs with abs(...)
+    let prev;
+    let iterations = 0;
+    while (s.includes('|') && iterations < 15) {
+      prev = s;
+      s = s.replace(/\|([^|]+)\|/g, 'abs($1)');
+      if (s === prev) break;
+      iterations++;
+    }
+    return s;
+  }
+
+  /**
    * Converts raw LaTeX string (from OCR, keyboard, or paste) into a valid Desmos plottable expression.
    * @param {string} latex - e.g. "\\frac{1}{x} + \\sin(2x) + x^{2} - \\sqrt{x}"
    * @returns {string} - e.g. "(1)/(x) + sin(2*x) + x^2 - sqrt(x)"
@@ -112,15 +143,18 @@ export class LatexEngine {
     // 2. Balanced Sqrt
     s = this.parseBalancedSqrt(s);
 
-    // 3. Superscripts: x^{...} -> x^(...) and x^2 -> x^(2)
+    // 3. Absolute values (\vert, \lvert, \rvert, |...|, \abs)
+    s = this.parseAbsoluteValues(s);
+
+    // 4. Superscripts: x^{...} -> x^(...) and x^2 -> x^(2)
     s = s.replace(/\^\{([^{}]+)\}/g, '^($1)');
     s = s.replace(/\^([0-9a-zA-Z]+)/g, '^($1)');
 
-    // 4. Subscripts: x_{...} -> x
+    // 5. Subscripts: x_{...} -> x
     s = s.replace(/_\{[^{}]+\}/g, '');
     s = s.replace(/_[0-9a-zA-Z]+/g, '');
 
-    // 5. Trig & special functions
+    // 6. Trig & special functions
     s = s.replace(/\\sin\b/g, 'sin');
     s = s.replace(/\\cos\b/g, 'cos');
     s = s.replace(/\\tan\b/g, 'tan');
@@ -135,22 +169,24 @@ export class LatexEngine {
     s = s.replace(/\\exp\b/g, 'exp');
     s = s.replace(/\\pi\b/gi, 'pi');
 
-    // 6. Multiplication symbols: \cdot, \times -> *
+    // 7. Multiplication symbols: \cdot, \times -> *
     s = s.replace(/\\cdot/g, '*');
     s = s.replace(/\\times/g, '*');
 
-    // 7. Remove LaTeX wrappers: \left, \right, \displaystyle, \, \! \quad
+    // 8. Remove LaTeX wrappers: \left, \right, \displaystyle, \, \! \quad
     s = s.replace(/\\left|\\right/g, '');
     s = s.replace(/\\displaystyle/g, '');
     s = s.replace(/\\[,!; ]/g, '');
     s = s.replace(/\\text\{[^{}]*\}/g, '');
     s = s.replace(/[\{\}]/g, '');
 
-    // 8. Replace implicit multiplications: 2 x -> 2*x, x y -> x*y, 2 \sin -> 2*sin
+    // 9. Replace implicit multiplications: 2 x -> 2*x, 2(x) -> 2*(x), ) x -> )*x
     s = s.replace(/(\d)\s+([a-zA-Z])/g, '$1*$2');
+    s = s.replace(/(\))\s*([\d\w\(])/g, '$1*$2');
+    s = s.replace(/(\d)\s*([a-zA-Z\(])/g, '$1*$2');
     s = s.replace(/(\d)\s+(\d)/g, '$1$2');
 
-    // 9. Cleanup whitespace
+    // 10. Cleanup whitespace
     s = s.replace(/\s+/g, ' ').trim();
 
     return s || 'sin(x)';
@@ -174,6 +210,9 @@ export class LatexEngine {
 
     // Roots: sqrt(x) -> \sqrt{x}
     s = s.replace(/sqrt\(([^()]+)\)/g, '\\sqrt{$1}');
+
+    // Absolute values: abs(x) -> \left| x \right|
+    s = s.replace(/abs\(([^()]+)\)/g, '\\left| $1 \\right|');
 
     // Superscripts: x^2 or x^(2) -> x^{2}
     s = s.replace(/\^\(?([0-9a-zA-Z+\-]+)\)?/g, '^{$1}');
@@ -225,6 +264,8 @@ export class LatexEngine {
       .replace(/\\sqrt\{([^{}]+)\}/g, '√($1)')
       .replace(/\^\{([^{}]+)\}/g, '<sup>$1</sup>')
       .replace(/\\(sin|cos|tan|ln|log|pi)/g, '<b>$1</b>')
+      .replace(/\\(lvert|rvert|vert)/g, '|')
+      .replace(/\\(left|right)\|/g, '|')
       .replace(/\\cdot/g, ' · ');
 
     el.innerHTML = `<span style="font-family:serif; font-size:16px;">${html}</span>`;

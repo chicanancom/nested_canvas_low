@@ -445,17 +445,25 @@ export class CanvasRenderer {
       }
     }
 
-    // Render Live In-Flight Stroke (Cái Bút đang vẽ)
-    if (activeSession && activeSession.targetNodeId === node.id) {
-      const livePoints = activeSession.getSmoothedPoints();
-      if (livePoints.length >= 2) {
-        const liveStroke = {
-          points: livePoints,
-          color: activeSession.color,
-          baseWidth: activeSession.baseWidth,
-          brushType: activeSession.brushType,
-        };
-        this.drawStroke(ctx, liveStroke, innerContentScreenTransform);
+    // Render Live In-Flight Strokes (Hỗ trợ cả nét vẽ đơn điểm lẫn đa điểm / Multi-touch Android)
+    if (activeSession) {
+      const localSessions = activeSession instanceof Map
+        ? Array.from(activeSession.values())
+        : (Array.isArray(activeSession) ? activeSession : [activeSession]);
+
+      for (const sess of localSessions) {
+        if (sess && sess.targetNodeId === node.id) {
+          const livePoints = sess.getSmoothedPoints ? sess.getSmoothedPoints() : sess.rawPoints;
+          if (livePoints && livePoints.length >= 2) {
+            const liveStroke = {
+              points: livePoints,
+              color: sess.color,
+              baseWidth: sess.baseWidth,
+              brushType: sess.brushType,
+            };
+            this.drawStroke(ctx, liveStroke, innerContentScreenTransform);
+          }
+        }
       }
     }
 
@@ -949,7 +957,12 @@ export class CanvasRenderer {
           ctx.font = '500 11px "Outfit", sans-serif';
           ctx.textAlign = 'left';
           ctx.textBaseline = 'middle';
-          ctx.fillText(`y = ${item.expr}`, minX + 28, tagY + 10, 110);
+          let displayExpr = item.expr
+            .replace(/\\(lvert|rvert|vert)/g, '|')
+            .replace(/\\left|\\right/g, '')
+            .replace(/\\cdot/g, '·')
+            .replace(/\\times/g, '×');
+          ctx.fillText(`y = ${displayExpr}`, minX + 28, tagY + 10, 110);
 
           tagY += 24;
           if (tagY > bodyY + bodyH - 30) break;
@@ -1204,17 +1217,25 @@ export class CanvasRenderer {
   }
 
   drawEraserCursor(ctx, cursor) {
-    ctx.save();
-    ctx.strokeStyle = '#ff7b72';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([4, 4]);
-    ctx.fillStyle = 'rgba(255, 123, 114, 0.12)';
+    if (!cursor) return;
+    const cursors = cursor instanceof Map
+      ? Array.from(cursor.values())
+      : (Array.isArray(cursor) ? cursor : [cursor]);
 
-    ctx.beginPath();
-    ctx.arc(cursor.x, cursor.y, cursor.radius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
+    for (const c of cursors) {
+      if (!c) continue;
+      ctx.save();
+      ctx.strokeStyle = '#ff7b72';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.fillStyle = 'rgba(255, 123, 114, 0.12)';
+
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, c.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 }
 

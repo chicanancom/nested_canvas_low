@@ -56,9 +56,11 @@ class NestedCanvasApp {
     this.isPanning = false;
     this.lastPointerScreen = new Vec2(0, 0);
 
-    // Active in-flight drawing gesture
-    this.activeSession = null;
+    // Active in-flight drawing gestures (Hỗ trợ đa điểm chạm / Multi-touch)
+    this.activeSessions = new Map(); // pointerId -> session
+    this.isMultiPointMode = false;   // Chế độ vẽ đa điểm (cho Android / Tablet)
     this.eraserCursor = null;
+    this.eraserCursors = new Map();
 
     // Canvas Node Dragging / Resizing initial cache
     this.nodeDragInitialPos = null;
@@ -85,6 +87,22 @@ class NestedCanvasApp {
     this.initLANSync();
     this.updateUI();
     this.startRenderLoop();
+  }
+
+  // Getter & Setter để đảm bảo tương thích ngược 100% với các tính năng đơn điểm
+  get activeSession() {
+    if (!this.activeSessions || this.activeSessions.size === 0) return null;
+    return this.activeSessions.values().next().value || null;
+  }
+
+  set activeSession(val) {
+    if (!this.activeSessions) this.activeSessions = new Map();
+    if (!val) {
+      this.activeSessions.clear();
+    } else {
+      const pid = val.pointerId !== undefined ? val.pointerId : 0;
+      this.activeSessions.set(pid, val);
+    }
   }
 
   initDefaultScene() {
@@ -287,6 +305,63 @@ class NestedCanvasApp {
         }
       });
     }
+
+    // Chế độ vẽ đa điểm (Multi-touch Drawing Mode)
+    const btnMultiLeft = document.getElementById('tool-multipoint');
+    if (btnMultiLeft) {
+      btnMultiLeft.addEventListener('click', () => {
+        this.toggleMultiPointMode();
+      });
+    }
+
+    const btnMultiBottom = document.getElementById('btn-toggle-multipoint');
+    if (btnMultiBottom) {
+      btnMultiBottom.addEventListener('click', () => {
+        this.toggleMultiPointMode();
+      });
+    }
+
+    const btnHudToggle = document.getElementById('btn-hud-multipoint-toggle');
+    if (btnHudToggle) {
+      btnHudToggle.addEventListener('click', () => {
+        this.toggleMultiPointMode(false);
+      });
+    }
+  }
+
+  toggleMultiPointMode(forcedState = null) {
+    this.isMultiPointMode = forcedState !== null ? forcedState : !this.isMultiPointMode;
+
+    const btnLeft = document.getElementById('tool-multipoint');
+    const btnBottom = document.getElementById('btn-toggle-multipoint');
+    const bottomStatusText = document.getElementById('multipoint-status-text');
+    const btnMobile = document.getElementById('mobile-tool-multipoint');
+    const hud = document.getElementById('multipoint-hud');
+
+    if (btnLeft) {
+      btnLeft.classList.toggle('active', this.isMultiPointMode);
+    }
+    if (btnBottom) {
+      btnBottom.classList.toggle('active', this.isMultiPointMode);
+    }
+    if (bottomStatusText) {
+      bottomStatusText.textContent = this.isMultiPointMode ? 'BẬT' : 'TẮT';
+    }
+    if (btnMobile) {
+      btnMobile.classList.toggle('active', this.isMultiPointMode);
+    }
+    if (hud) {
+      hud.style.display = this.isMultiPointMode ? 'flex' : 'none';
+    }
+
+    if (this.isMultiPointMode) {
+      if (this.activeTool === 'select' || this.activeTool === 'pan') {
+        this.setTool('pen');
+      }
+      this.showToast('🖐️ Đã BẬT Chế độ Vẽ Đa Điểm! Chạm nhiều ngón tay cùng lúc để vẽ đồng thời (Android & Cảm ứng).');
+    } else {
+      this.showToast('✌️ Đã TẮT Vẽ Đa Điểm. Chuyển về cử chỉ chuẩn (1 ngón vẽ, 2 ngón thu phóng/di chuyển).');
+    }
   }
 
   setTool(tool) {
@@ -296,12 +371,19 @@ class NestedCanvasApp {
     });
 
     const bottomBar = document.getElementById('bottom-bar');
-    if (tool.startsWith('eraser') || tool === 'pan' || tool === 'select' || tool === 'ocr') {
-      bottomBar.style.opacity = '0.4';
-      bottomBar.style.pointerEvents = 'none';
-    } else {
-      bottomBar.style.opacity = '1';
-      bottomBar.style.pointerEvents = 'auto';
+    if (bottomBar) {
+      const brushElements = bottomBar.querySelectorAll('.brush-types, .color-palette, .size-slider-wrapper');
+      if (tool.startsWith('eraser') || tool === 'pan' || tool === 'select' || tool === 'ocr') {
+        brushElements.forEach((el) => {
+          el.style.opacity = '0.35';
+          el.style.pointerEvents = 'none';
+        });
+      } else {
+        brushElements.forEach((el) => {
+          el.style.opacity = '1';
+          el.style.pointerEvents = 'auto';
+        });
+      }
     }
 
     if (tool === 'ocr') {
@@ -401,8 +483,9 @@ class NestedCanvasApp {
     this.activePointers.set(e.pointerId, screenPos);
 
     // Chạm 2 ngón tay trên màn hình cảm ứng: Chuyển sang cử chỉ Phóng to/Thu nhỏ (Pinch Zoom) + Di chuyển 2 ngón (Pan)
-    if (this.activePointers.size >= 2) {
-      this.activeSession = null;
+    // CHỈ kích hoạt Pinch Zoom khi KHÔNG ở chế độ vẽ đa điểm
+    if (!this.isMultiPointMode && this.activePointers.size >= 2) {
+      this.activeSessions.clear();
       this.isDragging = false;
       this.isPanning = false;
       this.isPanningChild = false;
@@ -414,7 +497,7 @@ class NestedCanvasApp {
       return;
     }
 
-    if (this.justFinishedPinching && (Date.now() - this.justFinishedPinching < 250)) {
+    if (!this.isMultiPointMode && this.justFinishedPinching && (Date.now() - this.justFinishedPinching < 250)) {
       return;
     }
 
@@ -551,9 +634,10 @@ class NestedCanvasApp {
         this.updateHierarchyTree();
         this.updateNodeProperties();
 
-        this.activeSession = {
+        const newSession = {
+          pointerId: e.pointerId,
           targetNodeId: targetNode.id,
-          rawPoints: [new Point2D(localPt.x, localPt.y, e.pressure || 0.8)],
+          rawPoints: [new Point2D(localPt.x, localPt.y, (e.pressure > 0 ? e.pressure : 0.8))],
           color: this.brushColor,
           baseWidth: this.brushSize,
           brushType: this.brushType,
@@ -561,6 +645,7 @@ class NestedCanvasApp {
             return CatmullRomSpline.smooth(this.rawPoints, 4);
           },
         };
+        this.activeSessions.set(e.pointerId, newSession);
         return;
       }
 
@@ -627,7 +712,8 @@ class NestedCanvasApp {
     }
 
     // Xử lý phóng to/thu nhỏ 2 ngón tay (Pinch to Zoom) và di chuyển 2 ngón (Two-finger Pan) trên điện thoại
-    if (this.activePointers && this.activePointers.size >= 2 && this.initialPinchDistance && this.initialPinchCenterWorld) {
+    // CHỈ thực hiện Pinch-Zoom khi KHÔNG ở chế độ vẽ đa điểm
+    if (!this.isMultiPointMode && this.activePointers && this.activePointers.size >= 2 && this.initialPinchDistance && this.initialPinchCenterWorld) {
       const pts = Array.from(this.activePointers.values());
       const curDist = pts[0].distanceTo(pts[1]);
       const curMidScreen = new Vec2((pts[0].x + pts[1].x) * 0.5, (pts[0].y + pts[1].y) * 0.5);
@@ -747,46 +833,49 @@ class NestedCanvasApp {
       return;
     }
 
-    // 5. Thêm điểm vẽ của cái bút đang thao tác
-    if (this.activeSession) {
-      const localPt = this.scene.screenToLocal(screenPos, this.activeSession.targetNodeId, this.camera);
-      const lastPt = this.activeSession.rawPoints[this.activeSession.rawPoints.length - 1];
+    // 5. Thêm điểm vẽ của cái bút đang thao tác (Hỗ trợ đa điểm / Multi-touch)
+    const session = this.activeSessions.get(e.pointerId);
+    if (session) {
+      const localPt = this.scene.screenToLocal(screenPos, session.targetNodeId, this.camera);
+      const lastPt = session.rawPoints[session.rawPoints.length - 1];
 
       if (lastPt.distanceTo(localPt) > 1.5) {
-        this.activeSession.rawPoints.push(
-          new Point2D(localPt.x, localPt.y, e.pressure || 0.8)
+        session.rawPoints.push(
+          new Point2D(localPt.x, localPt.y, (e.pressure > 0 ? e.pressure : 0.8))
         );
 
         // Phát sóng nét vẽ đang vẽ trực tiếp qua mạng LAN (Live Streaming)
         // CHỈ gửi khi vẽ trên một bảng con đang được chia sẻ (Bảng Mẹ tuyệt đối không chia sẻ)
-        const targetId = this.activeSession?.targetNodeId;
+        const targetId = session?.targetNodeId;
         const sharedRoot = this.getSharedRootForNode(targetId);
 
         if (sharedRoot && this.syncClient && this.syncClient.isConnected) {
-          const smoothed = this.activeSession.getSmoothedPoints ? this.activeSession.getSmoothedPoints() : this.activeSession.rawPoints;
+          const smoothed = session.getSmoothedPoints ? session.getSmoothedPoints() : session.rawPoints;
           this.syncClient.send('STROKE_LIVE', {
-            clientId: this.clientId,
+            clientId: `${this.clientId}_${e.pointerId}`,
             boardId: sharedRoot.id,
             nodeId: targetId,
             session: {
               targetNodeId: targetId,
               points: smoothed.map((p) => ({ x: p.x, y: p.y, pressure: p.pressure })),
-              color: this.activeSession.color,
-              baseWidth: this.activeSession.baseWidth,
-              brushType: this.activeSession.brushType,
+              color: session.color,
+              baseWidth: session.baseWidth,
+              brushType: session.brushType,
             },
           });
         }
       }
     }
 
-    // 6. Xử lý di chuột xóa liên tục (Continuous Drag Erasing)
+    // 6. Xử lý di chuột / ngón tay xóa liên tục (Continuous Drag Erasing)
     if (this.activeTool.startsWith('eraser')) {
-      this.eraserCursor = {
+      if (!this.eraserCursors) this.eraserCursors = new Map();
+      this.eraserCursors.set(e.pointerId, {
         x: screenPos.x,
         y: screenPos.y,
         radius: this.eraserRadius,
-      };
+      });
+      this.eraserCursor = Array.from(this.eraserCursors.values());
       if (e.buttons === 1 || this.isErasing) {
         const hit = this.hitTestBoard(screenPos);
         const targetNode = hit && hit.action === 'body' ? hit.node : (hit ? hit.node : this.scene.root);
@@ -796,10 +885,11 @@ class NestedCanvasApp {
       }
     } else {
       this.eraserCursor = null;
+      if (this.eraserCursors) this.eraserCursors.clear();
     }
 
     // Cập nhật con trỏ chuột linh hoạt khi di chuyển tự do (Hover Cursor)
-    if (!this.isDragging && !this.isResizing && !this.isPanning && !this.isPanningChild && !this.activeSession) {
+    if (!this.isDragging && !this.isResizing && !this.isPanning && !this.isPanningChild && this.activeSessions.size === 0) {
       const hoverHit = this.hitTestBoard(screenPos);
       if (hoverHit) {
         if (hoverHit.action === 'resize') {
@@ -831,6 +921,11 @@ class NestedCanvasApp {
         this.initialPinchDistance = null;
         this.initialPinchCenterWorld = null;
       }
+    }
+
+    if (this.eraserCursors) {
+      this.eraserCursors.delete(e.pointerId);
+      this.eraserCursor = this.eraserCursors.size > 0 ? Array.from(this.eraserCursors.values()) : null;
     }
 
     if (this.isPanning) {
@@ -936,31 +1031,33 @@ class NestedCanvasApp {
       return;
     }
 
-    if (this.activeSession) {
-      const smoothed = this.activeSession.getSmoothedPoints();
+    // Hoàn tất nét vẽ của điểm chạm này (Hỗ trợ cả vẽ đơn điểm lẫn đa điểm / Multi-touch)
+    const session = this.activeSessions.get(e.pointerId);
+    if (session) {
+      const smoothed = session.getSmoothedPoints ? session.getSmoothedPoints() : session.rawPoints;
       if (smoothed.length >= 2) {
         const stroke = new Stroke(
           smoothed,
-          this.activeSession.color,
-          this.activeSession.baseWidth,
-          this.activeSession.brushType
+          session.color,
+          session.baseWidth,
+          session.brushType
         );
-        const cmd = new AddStrokeCommand(this.activeSession.targetNodeId, stroke);
-        this.executeCommand(cmd, this.activeSession.targetNodeId);
+        const cmd = new AddStrokeCommand(session.targetNodeId, stroke);
+        this.executeCommand(cmd, session.targetNodeId);
 
-        const targetId = this.activeSession.targetNodeId;
+        const targetId = session.targetNodeId;
         const sharedRoot = this.getSharedRootForNode(targetId);
 
         if (sharedRoot && this.syncClient && this.syncClient.isConnected) {
           this.syncClient.send('STROKE_ADD', {
-            clientId: this.clientId,
+            clientId: `${this.clientId}_${e.pointerId}`,
             boardId: sharedRoot.id,
             nodeId: targetId,
             stroke: stroke.toJSON(),
           });
         }
       }
-      this.activeSession = null;
+      this.activeSessions.delete(e.pointerId);
       this.updateHierarchyTree();
     }
   }
@@ -1276,6 +1373,8 @@ class NestedCanvasApp {
       this.setTool('ocr');
     } else if (e.key.toLowerCase() === 'e') {
       this.setTool(e.shiftKey ? 'eraser-segment' : 'eraser-object');
+    } else if (e.key.toLowerCase() === 'm') {
+      this.toggleMultiPointMode();
     } else if (e.key.toLowerCase() === 'f') {
       this.fitAllContent();
     } else if (e.key === '0') {
@@ -1947,6 +2046,9 @@ class NestedCanvasApp {
           gd.expressions[idx].expr = e.target.value;
           gd.expressions[idx]._compiledExpr = null;
         }
+      };
+      input.onchange = () => {
+        this.broadcastGraphExpr(node);
       };
     });
 
@@ -3436,6 +3538,13 @@ class NestedCanvasApp {
       });
     }
 
+    const btnMobileMultipoint = document.getElementById('mobile-tool-multipoint');
+    if (btnMobileMultipoint) {
+      btnMobileMultipoint.addEventListener('click', () => {
+        this.toggleMultiPointMode();
+      });
+    }
+
     if (btnPaletteToggle && paletteDrawer) {
       btnPaletteToggle.addEventListener('click', () => {
         const isHidden = window.getComputedStyle(paletteDrawer).display === 'none';
@@ -3677,7 +3786,7 @@ class NestedCanvasApp {
         this.scene,
         this.camera,
         this.selectedNodeId,
-        this.activeSession,
+        this.activeSessions,
         this.eraserCursor,
         this.ocrSelectionBox,
         this.ocrHighlightBoxes,
