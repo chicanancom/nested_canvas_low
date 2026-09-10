@@ -81,10 +81,18 @@ class NestedCanvasApp {
     this.activePointers = new Map();
     this.initialPinchDistance = null;
     this.initialPinchZoom = null;
+    this._savedCastBoardId = null;
 
     this.initDefaultScene();
     this.bindEvents();
     this.initLANSync();
+    this.initCastPCControls();
+    if (this._savedCastBoardId) {
+      const node = this.scene.getNode(this._savedCastBoardId);
+      if (node) {
+        setTimeout(() => this.castBoardToPC(node), 300);
+      }
+    }
     this.updateUI();
     this.startRenderLoop();
   }
@@ -105,24 +113,147 @@ class NestedCanvasApp {
     }
   }
 
+  saveState() {
+    if (this._saveStateTimer) clearTimeout(this._saveStateTimer);
+    this._saveStateTimer = setTimeout(() => {
+      this._saveStateTimer = null;
+      this.saveStateImmediately();
+    }, 350);
+  }
+
+  saveStateImmediately() {
+    if (this._saveStateTimer) {
+      clearTimeout(this._saveStateTimer);
+      this._saveStateTimer = null;
+    }
+    try {
+      if (this.isSingleBoardMode) {
+        const node = this.scene.getNode(this.singleBoardId);
+        if (node) {
+          localStorage.setItem(`nestedcanvas_single_${this.singleBoardId}`, JSON.stringify({
+            node: node.toJSON(),
+            camera: {
+              zoom: this.camera.zoom,
+              pan: { x: this.camera.pan.x, y: this.camera.pan.y },
+            },
+            savedAt: Date.now(),
+          }));
+        }
+        return;
+      }
+
+      if (this.isApplyingRemoteSync) return;
+
+      const data = {
+        version: 1,
+        savedAt: Date.now(),
+        boardCounter: this.boardCounter || 0,
+        selectedNodeId: this.selectedNodeId,
+        currentCastBoardId: this.syncClient?.currentCastBoardId || null,
+        camera: {
+          zoom: this.camera.zoom,
+          pan: { x: this.camera.pan.x, y: this.camera.pan.y },
+        },
+        scene: this.scene.toJSON(),
+      };
+      localStorage.setItem('nestedcanvas_workspace_state', JSON.stringify(data));
+      if (this.syncClient && this.syncClient.isConnected) {
+        this.broadcastCanvasMirror();
+      }
+    } catch (e) {
+      console.warn('[Storage] Error saving workspace state:', e);
+    }
+  }
+
+  loadState() {
+    try {
+      if (this.isSingleBoardMode) {
+        const raw = localStorage.getItem(`nestedcanvas_single_${this.singleBoardId}`);
+        if (!raw) return false;
+        const data = JSON.parse(raw);
+        if (data.node) {
+          const node = CanvasNode.fromJSON(data.node);
+          node.id = this.singleBoardId;
+          node.isShared = true;
+          this.scene.root.children = [node];
+          this.selectedNodeId = node.id;
+        }
+        if (data.camera) {
+          if (typeof data.camera.zoom === 'number' && data.camera.zoom > 0) {
+            this.camera.zoom = data.camera.zoom;
+          }
+          if (data.camera.pan && typeof data.camera.pan.x === 'number') {
+            this.camera.pan = new Vec2(data.camera.pan.x, data.camera.pan.y);
+          }
+        }
+        return true;
+      }
+
+      const raw = localStorage.getItem('nestedcanvas_workspace_state');
+      if (!raw) return false;
+      const data = JSON.parse(raw);
+
+      if (data.scene && data.scene.root) {
+        this.scene.loadFromJSON(data.scene);
+      }
+
+      if (typeof data.boardCounter === 'number') {
+        this.boardCounter = data.boardCounter;
+      }
+
+      if (data.camera) {
+        if (typeof data.camera.zoom === 'number' && data.camera.zoom > 0) {
+          this.camera.zoom = data.camera.zoom;
+        }
+        if (data.camera.pan && typeof data.camera.pan.x === 'number') {
+          this.camera.pan = new Vec2(data.camera.pan.x, data.camera.pan.y);
+        }
+      }
+
+      if (data.selectedNodeId && this.scene.getNode(data.selectedNodeId)) {
+        this.selectedNodeId = data.selectedNodeId;
+      } else if (this.scene.root.children.length > 0) {
+        this.selectedNodeId = this.scene.root.children[0].id;
+      }
+
+      if (data.currentCastBoardId) {
+        this._savedCastBoardId = data.currentCastBoardId;
+      }
+
+      return true;
+    } catch (e) {
+      console.warn('[Storage] Error loading workspace state:', e);
+      return false;
+    }
+  }
+
   initDefaultScene() {
-    // Khởi đầu sạch hoàn toàn
-    this.scene.root.children = [];
     if (this.isSingleBoardMode) {
-      // Chế độ bảng con: Tạo trước bảng con mục tiêu để người dùng tương tác ngay
-      const placeholder = new CanvasNode('Bảng Chia Sẻ', 780, 540, Transform2D.identity(), null, null, 'chalkboard', 'grid');
-      placeholder.id = this.singleBoardId;
-      placeholder.isShared = true;
-      this.scene.root.addChild(placeholder);
-      this.selectedNodeId = this.singleBoardId;
-      setTimeout(() => this.focusBoardFullscreen(placeholder), 60);
+      const loaded = this.loadState();
+      if (!loaded) {
+        const placeholder = new CanvasNode('Bảng Chia Sẻ', 780, 540, Transform2D.identity(), null, null, 'chalkboard', 'grid');
+        placeholder.id = this.singleBoardId;
+        placeholder.isShared = true;
+        this.scene.root.addChild(placeholder);
+        this.selectedNodeId = this.singleBoardId;
+        setTimeout(() => this.focusBoardFullscreen(placeholder), 60);
+      }
     } else {
-      this.selectedNodeId = null;
+      const loaded = this.loadState();
+      if (!loaded) {
+        this.scene.root.children = [];
+        this.selectedNodeId = null;
+      }
     }
   }
 
   bindEvents() {
     window.addEventListener('resize', () => this.renderer.resize());
+    window.addEventListener('beforeunload', () => this.saveStateImmediately());
+    window.addEventListener('pagehide', () => this.saveStateImmediately());
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') this.saveStateImmediately();
+    });
 
     // Prevent browser autoscroll on middle click
     this.canvas.addEventListener('mousedown', (e) => {
@@ -205,9 +336,11 @@ class NestedCanvasApp {
     document.getElementById('zoom-value').addEventListener('click', () => {
       this.camera.zoom = 1.0;
       this.updateZoomHUD();
+      this.broadcastCurrentCameraSync();
     });
     document.getElementById('btn-zoom-fit').addEventListener('click', () => {
       this.fitAllContent();
+      this.broadcastCurrentCameraSync();
     });
 
     // Undo / Redo
@@ -413,6 +546,7 @@ class NestedCanvasApp {
     if (this.history.undoStack.length > this.history.maxCapacity) {
       this.history.undoStack.shift();
     }
+    this.saveState();
   }
 
   promptInsertImage(targetNode) {
@@ -724,6 +858,7 @@ class NestedCanvasApp {
         const screenCenter = new Vec2(this.camera.viewportWidth * 0.5, this.camera.viewportHeight * 0.5);
         this.camera.pan = this.initialPinchCenterWorld.sub(curMidScreen.sub(screenCenter).scale(1.0 / newZoom));
         this.updateZoomHUD();
+        this.broadcastCurrentCameraSync();
       }
       return;
     }
@@ -740,6 +875,7 @@ class NestedCanvasApp {
       const worldDelta = delta.scale(1.0 / this.camera.zoom);
       this.panningNode.contentPan.x -= worldDelta.x;
       this.panningNode.contentPan.y -= worldDelta.y;
+      this.broadcastCurrentCameraSync();
       this.canvas.style.cursor = 'grabbing';
       return;
     }
@@ -748,6 +884,7 @@ class NestedCanvasApp {
     if (this.isPanning || (e.buttons & 4) !== 0) {
       this.camera.pan = this.camera.pan.sub(delta.scale(1.0 / this.camera.zoom));
       this.updateZoomHUD();
+      this.broadcastCurrentCameraSync();
       this.canvas.style.cursor = 'grabbing';
       return;
     }
@@ -818,6 +955,7 @@ class NestedCanvasApp {
       const hInput = document.getElementById('prop-h');
       if (wInput) wInput.value = Math.round(node.width);
       if (hInput) hInput.value = Math.round(node.height);
+      this.broadcastCurrentCameraSync();
       return;
     }
 
@@ -830,6 +968,7 @@ class NestedCanvasApp {
 
       this.draggingNode.transform.tx = this.dragInitialTransform.tx + deltaInParent.x;
       this.draggingNode.transform.ty = this.dragInitialTransform.ty + deltaInParent.y;
+      this.broadcastCurrentCameraSync();
       return;
     }
 
@@ -845,24 +984,34 @@ class NestedCanvasApp {
         );
 
         // Phát sóng nét vẽ đang vẽ trực tiếp qua mạng LAN (Live Streaming)
-        // CHỈ gửi khi vẽ trên một bảng con đang được chia sẻ (Bảng Mẹ tuyệt đối không chia sẻ)
         const targetId = session?.targetNodeId;
         const sharedRoot = this.getSharedRootForNode(targetId);
 
-        if (sharedRoot && this.syncClient && this.syncClient.isConnected) {
+        if (this.syncClient && this.syncClient.isConnected) {
           const smoothed = session.getSmoothedPoints ? session.getSmoothedPoints() : session.rawPoints;
-          this.syncClient.send('STROKE_LIVE', {
+          const strokeSession = {
+            targetNodeId: targetId,
+            points: smoothed.map((p) => ({ x: p.x, y: p.y, pressure: p.pressure })),
+            color: session.color,
+            baseWidth: session.baseWidth,
+            brushType: session.brushType,
+          };
+
+          // Gửi cho màn chiếu Canvas PC
+          this.syncClient.send('CANVAS_STROKE_LIVE', {
             clientId: `${this.clientId}_${e.pointerId}`,
-            boardId: sharedRoot.id,
-            nodeId: targetId,
-            session: {
-              targetNodeId: targetId,
-              points: smoothed.map((p) => ({ x: p.x, y: p.y, pressure: p.pressure })),
-              color: session.color,
-              baseWidth: session.baseWidth,
-              brushType: session.brushType,
-            },
+            session: strokeSession,
           });
+
+          // Gửi cho phòng bảng con (nếu có chia sẻ)
+          if (sharedRoot) {
+            this.syncClient.send('STROKE_LIVE', {
+              clientId: `${this.clientId}_${e.pointerId}`,
+              boardId: sharedRoot.id,
+              nodeId: targetId,
+              session: strokeSession,
+            });
+          }
         }
       }
     }
@@ -930,11 +1079,13 @@ class NestedCanvasApp {
 
     if (this.isPanning) {
       this.isPanning = false;
+      this.broadcastCurrentCameraSync();
     }
 
     if (this.isPanningChild) {
       this.isPanningChild = false;
       this.panningNode = null;
+      this.broadcastCurrentCameraSync();
     }
 
     if (this.isResizing) {
@@ -954,6 +1105,7 @@ class NestedCanvasApp {
       this.resizingNode = null;
       this.resizeHandle = null;
       this.resizeInitialStrokes = null;
+      this.broadcastCurrentCameraSync();
     }
 
     if (this.isErasing) {
@@ -970,16 +1122,22 @@ class NestedCanvasApp {
           this.scene
         );
         const sharedRoot = this.getSharedRootForNode(nodeId);
-        if (sharedRoot && this.syncClient && this.syncClient.isConnected) {
+        if (this.syncClient && this.syncClient.isConnected) {
           const remainingIds = new Set(finalStrokes.map((s) => s.id));
           const removedIds = initialStrokes.filter((s) => !remainingIds.has(s.id)).map((s) => s.id);
           if (removedIds.length > 0) {
-            this.syncClient.send('STROKE_ERASE', {
-              clientId: this.clientId,
-              boardId: sharedRoot.id,
+            this.syncClient.send('CANVAS_STROKE_ERASE', {
               nodeId,
               removedStrokeIds: removedIds,
             });
+            if (sharedRoot) {
+              this.syncClient.send('STROKE_ERASE', {
+                clientId: this.clientId,
+                boardId: sharedRoot.id,
+                nodeId,
+                removedStrokeIds: removedIds,
+              });
+            }
           }
         }
       }
@@ -1010,6 +1168,7 @@ class NestedCanvasApp {
       this.draggingNode = null;
       this.dragInitialTransform = null;
       this.nodeDragInitialPos = null;
+      this.broadcastCurrentCameraSync();
     }
 
     const hoverHit = this.hitTestBoard(new Vec2(e.clientX, e.clientY));
@@ -1048,13 +1207,23 @@ class NestedCanvasApp {
         const targetId = session.targetNodeId;
         const sharedRoot = this.getSharedRootForNode(targetId);
 
-        if (sharedRoot && this.syncClient && this.syncClient.isConnected) {
-          this.syncClient.send('STROKE_ADD', {
+        if (this.syncClient && this.syncClient.isConnected) {
+          this.syncClient.send('CANVAS_STROKE_LIVE', {
             clientId: `${this.clientId}_${e.pointerId}`,
-            boardId: sharedRoot.id,
+            session: null,
+          });
+          this.syncClient.send('CANVAS_STROKE_ADD', {
             nodeId: targetId,
             stroke: stroke.toJSON(),
           });
+          if (sharedRoot) {
+            this.syncClient.send('STROKE_ADD', {
+              clientId: `${this.clientId}_${e.pointerId}`,
+              boardId: sharedRoot.id,
+              nodeId: targetId,
+              stroke: stroke.toJSON(),
+            });
+          }
         }
       }
       this.activeSessions.delete(e.pointerId);
@@ -1198,16 +1367,17 @@ class NestedCanvasApp {
     // Nếu bảng này đang được phóng to toàn màn hình, bấm lần nữa để thu nhỏ phục hồi góc nhìn cũ
     if (this.savedFullscreenCamera && this.fullscreenTargetNodeId === node.id) {
       this.camera.zoom = this.savedFullscreenCamera.zoom;
-      this.camera.pan = this.savedFullscreenCamera.pan.clone();
+      this.camera.pan = this.savedFullscreenCamera.pan.clone ? this.savedFullscreenCamera.pan.clone() : new Vec2(this.savedFullscreenCamera.pan.x, this.savedFullscreenCamera.pan.y);
       this.savedFullscreenCamera = null;
       this.fullscreenTargetNodeId = null;
       this.updateZoomHUD();
+      this.broadcastCurrentCameraSync();
       return;
     }
 
     this.savedFullscreenCamera = {
       zoom: this.camera.zoom,
-      pan: this.camera.pan.clone(),
+      pan: this.camera.pan.clone ? this.camera.pan.clone() : new Vec2(this.camera.pan?.x || 0, this.camera.pan?.y || 0),
     };
     this.fullscreenTargetNodeId = node.id;
 
@@ -1239,6 +1409,7 @@ class NestedCanvasApp {
     this.updateZoomHUD();
     this.updateHierarchyTree();
     this.updateNodeProperties();
+    this.broadcastCurrentCameraSync();
   }
 
   clearBoard(node) {
@@ -1276,6 +1447,7 @@ class NestedCanvasApp {
     this.updateHierarchyTree();
     this.updateNodeProperties();
     this.updateUI();
+    this.saveState();
   }
 
   performErase(screenPos, node) {
@@ -1326,6 +1498,7 @@ class NestedCanvasApp {
         contentX * newZoom - localWindowPt.x,
         contentY * newZoom - localWindowPt.y
       );
+      this.broadcastCurrentCameraSync();
       return;
     }
 
@@ -1345,6 +1518,7 @@ class NestedCanvasApp {
     const offset = anchorScreen.sub(screenCenter);
     this.camera.pan = worldAnchor.sub(offset.scale(1.0 / newZoom));
     this.updateZoomHUD();
+    this.broadcastCurrentCameraSync();
   }
 
   zoomAroundScreenCenter(factor) {
@@ -1387,12 +1561,14 @@ class NestedCanvasApp {
       node.history.undo(this.scene);
       this.updateHierarchyTree();
       this.updateNodeProperties();
+      this.saveState();
       return;
     }
     if (this.history.canUndo()) {
       this.history.undo(this.scene);
       this.updateHierarchyTree();
       this.updateNodeProperties();
+      this.saveState();
     }
   }
 
@@ -1401,12 +1577,14 @@ class NestedCanvasApp {
       node.history.redo(this.scene);
       this.updateHierarchyTree();
       this.updateNodeProperties();
+      this.saveState();
       return;
     }
     if (this.history.canRedo()) {
       this.history.redo(this.scene);
       this.updateHierarchyTree();
       this.updateNodeProperties();
+      this.saveState();
     }
   }
 
@@ -1488,6 +1666,7 @@ class NestedCanvasApp {
     this.updateHierarchyTree();
     this.updateNodeProperties();
     this.updateUI();
+    this.saveState();
     return newBoard;
   }
 
@@ -1589,6 +1768,7 @@ class NestedCanvasApp {
     );
 
     this.updateZoomHUD();
+    this.broadcastCurrentCameraSync();
   }
 
   exportPNG() {
@@ -1950,6 +2130,14 @@ class NestedCanvasApp {
           this.brushColor = '#ffffff';
           this.updateColorPaletteActive();
         }
+        this.saveStateImmediately();
+        if (this.syncClient && this.syncClient.isConnected) {
+          this.syncClient.send('CANVAS_STYLE', {
+            nodeId: node.id,
+            style: newTheme,
+          });
+          this.broadcastCanvasMirror();
+        }
       });
     }
 
@@ -1957,6 +2145,14 @@ class NestedCanvasApp {
     if (gridSelect) {
       gridSelect.addEventListener('change', (e) => {
         node.gridType = e.target.value;
+        this.saveStateImmediately();
+        if (this.syncClient && this.syncClient.isConnected) {
+          this.syncClient.send('CANVAS_STYLE', {
+            nodeId: node.id,
+            gridType: e.target.value,
+          });
+          this.broadcastCanvasMirror();
+        }
       });
     }
     const propShareBtn = document.getElementById('btn-prop-share-board');
@@ -2241,8 +2437,16 @@ class NestedCanvasApp {
 
     if (this.renderThemeMenu) this.renderThemeMenu();
     this.updateNodeProperties();
+    this.saveStateImmediately();
 
     if (this.syncClient && this.syncClient.isConnected && !this.isApplyingRemoteSync) {
+      this.syncClient.send('CANVAS_STYLE', {
+        clientId: this.clientId,
+        style: themeId,
+        isGlobal: true,
+      });
+      this.broadcastCanvasMirror();
+
       if (this.isSingleBoardMode && this.singleBoardId) {
         this.syncClient.send('NODE_STYLE', {
           clientId: this.clientId,
@@ -2277,8 +2481,16 @@ class NestedCanvasApp {
     }
     if (this.renderThemeMenu) this.renderThemeMenu();
     this.updateNodeProperties();
+    this.saveStateImmediately();
 
     if (this.syncClient && this.syncClient.isConnected && !this.isApplyingRemoteSync) {
+      this.syncClient.send('CANVAS_STYLE', {
+        clientId: this.clientId,
+        gridType: gridId,
+        isGlobal: true,
+      });
+      this.broadcastCanvasMirror();
+
       if (this.isSingleBoardMode && this.singleBoardId) {
         this.syncClient.send('NODE_STYLE', {
           clientId: this.clientId,
@@ -3006,8 +3218,34 @@ class NestedCanvasApp {
             : '🔴 Đang thử kết nối lại...';
           modalStatus.style.color = connected ? '#3fb950' : '#f85149';
         }
+        const pillHost = document.getElementById('lan-server-host-pill');
+        if (pillHost) {
+          pillHost.textContent = connected ? `🟢 Đã nối: ${this.syncClient.getHost()}` : `🔴 Chưa nối: ${this.syncClient.getHost()}`;
+          pillHost.style.color = connected ? '#3fb950' : '#f85149';
+          pillHost.style.background = connected ? 'rgba(63,185,80,0.15)' : 'rgba(248,81,73,0.15)';
+        }
       },
     });
+
+    // Kết nối cấu hình Máy chủ Backend (cho APK / điện thoại)
+    const inputServerHost = document.getElementById('input-server-host');
+    const btnSaveServerHost = document.getElementById('btn-save-server-host');
+    if (inputServerHost) {
+      inputServerHost.value = this.syncClient.getHost();
+    }
+    if (btnSaveServerHost && inputServerHost) {
+      btnSaveServerHost.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const val = inputServerHost.value.trim();
+        if (val) {
+          this.syncClient.setHost(val);
+          btnSaveServerHost.textContent = '✓ Đang nối...';
+          setTimeout(() => {
+            btnSaveServerHost.textContent = 'Lưu & Kết Nối';
+          }, 1500);
+        }
+      });
+    }
 
     this.syncClient.connect();
 
@@ -3375,8 +3613,8 @@ class NestedCanvasApp {
     subtitleEl.textContent = `Kích thước: ${Math.round(node.width)}×${Math.round(node.height)} px • ID: ${node.id.slice(0, 8)}...`;
 
     const port = window.location.port || '3000';
-    const host = this.syncClient?.localIp || window.location.hostname || 'localhost';
-    const boardUrl = `${window.location.protocol}//${host}:${port}/?board=${node.id}`;
+    const host = this.syncClient?.localIp || this.syncClient?.getHost() || window.location.hostname || 'localhost';
+    const boardUrl = `${window.location.protocol}//${host}:${port}/?board=${node.id}&server=${host}`;
 
     if (inputUrl) inputUrl.value = boardUrl;
     if (linkOpenTab) linkOpenTab.href = boardUrl;
@@ -3511,6 +3749,24 @@ class NestedCanvasApp {
       });
     }
 
+    const btnMobileCast = document.getElementById('btn-mobile-cast-pc');
+    if (btnMobileCast) {
+      btnMobileCast.addEventListener('click', () => {
+        if (this.isSingleBoardMode && this.singleBoardId) {
+          const node = this.scene.getNode(this.singleBoardId);
+          if (node) {
+            if (this.syncClient && this.syncClient.currentCastBoardId === this.singleBoardId) {
+              this.stopCastPC();
+            } else {
+              this.castBoardToPC(node);
+            }
+          }
+        } else {
+          this.openCastPCModal();
+        }
+      });
+    }
+
     const updateMobileToolActive = (activeToolId) => {
       if (btnPen) btnPen.classList.toggle('active', activeToolId === 'pen');
       if (btnEraser) btnEraser.classList.toggle('active', activeToolId.startsWith('eraser'));
@@ -3602,9 +3858,351 @@ class NestedCanvasApp {
     });
   }
 
+  /* =========================================================================
+   * ĐIỀU KHIỂN CHIẾU BẢNG LÊN MÀN HÌNH PC TOÀN MÀN HÌNH (REMOTE PC CAST)
+   * ========================================================================= */
+
+  initCastPCControls() {
+    const btnCast = document.getElementById('btn-cast-pc');
+    const modalCast = document.getElementById('modal-cast-pc');
+    const btnCloseCast = document.getElementById('btn-close-cast-modal');
+    const btnStopCast = document.getElementById('btn-stop-current-cast');
+    const btnCreateCastBoard = document.getElementById('btn-cast-create-board');
+
+    if (btnCast) {
+      btnCast.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.openCastPCModal();
+      });
+    }
+
+    if (btnCloseCast && modalCast) {
+      btnCloseCast.addEventListener('click', () => {
+        modalCast.style.display = 'none';
+      });
+    }
+
+    if (modalCast) {
+      modalCast.addEventListener('click', (e) => {
+        if (e.target === modalCast) modalCast.style.display = 'none';
+      });
+    }
+
+    const btnCastEntireCanvas = document.getElementById('btn-cast-entire-canvas');
+    if (btnCastEntireCanvas) {
+      btnCastEntireCanvas.addEventListener('click', () => {
+        this.broadcastCanvasMirror();
+        this.updateCastUIState('canvas', { name: 'Toàn Bộ Canvas' });
+        this.showToast('🖥️ Đang chiếu toàn bộ Canvas lên màn hình PC!');
+      });
+    }
+
+    if (btnStopCast) {
+      btnStopCast.addEventListener('click', () => {
+        this.stopCastPC();
+      });
+    }
+
+    if (btnCreateCastBoard) {
+      btnCreateCastBoard.addEventListener('click', () => {
+        const board = this.createNewBoard();
+        this.renderCastBoardsList();
+        if (board) {
+          this.castBoardToPC(board);
+        }
+      });
+    }
+
+    // Lắng nghe sự kiện từ SyncClient
+    if (this.syncClient) {
+      this.syncClient.on('CAST_BOARD', (data) => {
+        this.updateCastUIState(data.boardId, data.node);
+      });
+
+      this.syncClient.on('STOP_CAST_BOARD', () => {
+        this.updateCastUIState(null, null);
+      });
+
+      this.syncClient.on('WELCOME', (data) => {
+        if (data.current_cast_board_id) {
+          this.updateCastUIState(data.current_cast_board_id, data.current_cast_board_node);
+        } else {
+          this.updateCastUIState('canvas', { name: 'Toàn Bộ Canvas' });
+        }
+        // Tự động phát sóng toàn cảnh Canvas lên PC display
+        this.broadcastCanvasMirror();
+      });
+
+      this.syncClient.on('PLEASE_UPLOAD_CANVAS_MIRROR', () => {
+        this.broadcastCanvasMirror();
+      });
+    }
+  }
+
+  openCastPCModal() {
+    const modal = document.getElementById('modal-cast-pc');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    this.renderCastBoardsList();
+  }
+
+  broadcastCanvasMirror() {
+    if (!this.syncClient || !this.syncClient.isConnected) return;
+    this.syncClient.send('CANVAS_MIRROR', {
+      scene: this.scene.toJSON(),
+      camera: {
+        zoom: this.camera.zoom,
+        pan: { x: this.camera.pan.x, y: this.camera.pan.y },
+        viewport: { w: window.innerWidth, h: window.innerHeight },
+      },
+    });
+  }
+
+  broadcastCanvasCamera() {
+    if (!this.syncClient || !this.syncClient.isConnected) return;
+    if (this._canvasCameraThrottler) return;
+    this._canvasCameraThrottler = requestAnimationFrame(() => {
+      this._canvasCameraThrottler = null;
+      if (!this.syncClient || !this.syncClient.isConnected) return;
+      this.syncClient.send('CANVAS_CAMERA_SYNC', {
+        zoom: this.camera.zoom,
+        pan: { x: this.camera.pan.x, y: this.camera.pan.y },
+        viewport: { w: window.innerWidth, h: window.innerHeight },
+      });
+    });
+  }
+
+  updateCastUIState(boardId, node = null) {
+    const dotStatus = document.getElementById('dot-cast-status');
+    const labelCast = document.getElementById('label-cast-pc');
+    const btnCast = document.getElementById('btn-cast-pc');
+    const btnMobileCast = document.getElementById('btn-mobile-cast-pc');
+    const statusTextDisplay = document.getElementById('cast-status-text-display');
+    const btnStopCurrent = document.getElementById('btn-stop-current-cast');
+
+    const nodeName = node?.name || (boardId ? this.scene.getNode(boardId)?.name : null) || 'Bảng Con';
+
+    if (boardId) {
+      if (dotStatus) {
+        dotStatus.style.background = '#3fb950';
+        dotStatus.style.boxShadow = '0 0 8px #3fb950';
+      }
+      if (labelCast) labelCast.textContent = `📺 Chiếu: ${nodeName}`;
+      if (btnCast) {
+        btnCast.style.borderColor = 'rgba(63,185,80,0.6)';
+        btnCast.style.color = '#3fb950';
+      }
+      if (btnMobileCast) {
+        btnMobileCast.style.borderColor = '#3fb950';
+        btnMobileCast.style.background = 'rgba(63,185,80,0.2)';
+      }
+      if (statusTextDisplay) {
+        statusTextDisplay.textContent = `🟢 Đang chiếu: "${nodeName}"`;
+        statusTextDisplay.style.color = '#3fb950';
+      }
+      if (btnStopCurrent) btnStopCurrent.style.display = 'block';
+    } else {
+      if (dotStatus) {
+        dotStatus.style.background = '#8b949e';
+        dotStatus.style.boxShadow = 'none';
+      }
+      if (labelCast) labelCast.textContent = '📺 Chiếu PC';
+      if (btnCast) {
+        btnCast.style.borderColor = 'rgba(88,166,255,0.4)';
+        btnCast.style.color = '#58a6ff';
+      }
+      if (btnMobileCast) {
+        btnMobileCast.style.borderColor = 'transparent';
+        btnMobileCast.style.background = 'transparent';
+      }
+      if (statusTextDisplay) {
+        statusTextDisplay.textContent = 'Chưa chọn bảng nào';
+        statusTextDisplay.style.color = '#8b949e';
+      }
+      if (btnStopCurrent) btnStopCurrent.style.display = 'none';
+    }
+
+    // Cập nhật lại danh sách bảng trong modal nếu đang hiển thị
+    const modal = document.getElementById('modal-cast-pc');
+    if (modal && modal.style.display === 'flex') {
+      this.renderCastBoardsList();
+    }
+  }
+
+  castBoardToPC(node, autoFocus = false) {
+    if (!node) return;
+    node.isShared = true;
+    if (this.syncClient) {
+      this.syncClient.shareBoard(node.id, node.toJSON(), true);
+      this.syncClient.joinBoard(node.id);
+      this.syncClient.castBoard(node.id, node.toJSON());
+    }
+    this.updateCastUIState(node.id, node);
+    this.showToast(`📺 Đang chiếu "${node.name}" lên Màn hình PC!`);
+
+    // Chỉ tự căn giữa nếu được yêu cầu rõ ràng
+    if (autoFocus && !this.isSingleBoardMode) {
+      this.focusBoardFullscreen(node);
+    }
+    setTimeout(() => {
+      this.broadcastCurrentCameraSync();
+      this.broadcastCanvasMirror();
+    }, 100);
+  }
+
+  stopCastPC() {
+    if (this.syncClient) {
+      this.syncClient.stopCastBoard();
+    }
+    this.updateCastUIState(null, null);
+    this.showToast('📺 Đã dừng chiếu lên màn hình PC');
+  }
+
+  broadcastCurrentCameraSync() {
+    this.saveState();
+    this.broadcastCanvasCamera();
+    if (!this.syncClient || !this.syncClient.currentCastBoardId) return;
+    const boardId = this.syncClient.currentCastBoardId;
+    const node = this.scene.getNode(boardId);
+    if (!node) return;
+
+    if (this._cameraSyncThrottler) return;
+    this._cameraSyncThrottler = requestAnimationFrame(() => {
+      this._cameraSyncThrottler = null;
+      if (!this.syncClient || !this.syncClient.currentCastBoardId) return;
+
+      const isMobile = window.innerWidth <= 768 || this.isSingleBoardMode;
+      const paddingX = isMobile ? 14 : 64;
+      const paddingTop = isMobile ? 60 : 64;
+      const paddingBottom = isMobile ? 96 : 64;
+
+      const availW = Math.max(160, window.innerWidth - paddingX * 2);
+      const availH = Math.max(160, window.innerHeight - (paddingTop + paddingBottom));
+
+      const worldTransform = this.scene.computeWorldTransform(node.id);
+      const worldScale = Math.hypot(worldTransform.a, worldTransform.b) || 1.0;
+      const worldW = (node.width || 800) * worldScale;
+      const worldH = (node.height || 600) * worldScale;
+
+      const baseFitZoom = Math.min(availW / worldW, availH / worldH);
+      const fitRatio = this.camera.zoom / Math.max(0.001, baseFitZoom);
+
+      const worldCenter = worldTransform.transformPoint(
+        new Vec2(node.width * 0.5, node.height * 0.5)
+      );
+      const offsetYInWorld = isMobile ? ((paddingTop - paddingBottom) * 0.5) / this.camera.zoom : 0;
+      const expectedCenterY = worldCenter.y - offsetYInWorld;
+
+      const panOffsetX = this.camera.pan.x - worldCenter.x;
+      const panOffsetY = this.camera.pan.y - expectedCenterY;
+
+      this.syncClient.sendCameraSync(boardId, {
+        contentZoom: node.contentZoom || 1.0,
+        contentPan: {
+          x: node.contentPan ? node.contentPan.x : 0,
+          y: node.contentPan ? node.contentPan.y : 0,
+        },
+        width: node.width,
+        height: node.height,
+        fitRatio: fitRatio,
+        panOffsetX: panOffsetX,
+        panOffsetY: panOffsetY,
+      });
+    });
+  }
+
+  renderCastBoardsList() {
+    const container = document.getElementById('cast-boards-list');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const boards = this.scene.root.children.filter((c) => c && c.id !== this.scene.root.id);
+    const activeCastId = this.syncClient?.currentCastBoardId || null;
+
+    if (boards.length === 0) {
+      container.innerHTML = `
+        <div style="text-align: center; padding: 20px 14px; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px dashed var(--border-subtle); color: var(--text-muted); font-size: 12px; line-height: 1.6;">
+          ⚠️ Bạn chưa có bảng nào trên màn hình.<br>
+          Bấm <b style="color:#58a6ff;">"+ Thêm Bảng Mới"</b> ở trên để tạo bảng bài học.
+        </div>
+      `;
+      return;
+    }
+
+    boards.forEach((board) => {
+      const isCastingThis = activeCastId === board.id;
+      const strokesCount = Array.isArray(board.elements) ? board.elements.length : 0;
+      const typeLabel = board.graphData ? '📊 Đồ Thị Desmos' : (board.style === 'whiteboard' ? '📋 Bảng Trắng' : '📐 Bảng Phấn');
+
+      const card = document.createElement('div');
+      card.style.cssText = `
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 14px;
+        border-radius: 10px;
+        background: ${isCastingThis ? 'rgba(63, 185, 80, 0.12)' : 'rgba(255, 255, 255, 0.03)'};
+        border: 1px solid ${isCastingThis ? 'rgba(63, 185, 80, 0.5)' : 'var(--border-subtle)'};
+        transition: all 0.2s ease;
+      `;
+
+      card.innerHTML = `
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <div style="font-weight: 700; font-size: 13.5px; color: ${isCastingThis ? '#3fb950' : '#f0f6fc'}; display: flex; align-items: center; gap: 6px;">
+            <span>${board.name || 'Bảng Con'}</span>
+            ${isCastingThis ? '<span style="font-size: 10px; background: rgba(63,185,80,0.2); color: #3fb950; padding: 2px 6px; border-radius: 10px;">Đang chiếu</span>' : ''}
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); display: flex; gap: 8px;">
+            <span>${typeLabel}</span>
+            <span>•</span>
+            <span>${strokesCount} nét vẽ</span>
+            <span>•</span>
+            <span>${Math.round(board.width)}×${Math.round(board.height)} px</span>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 8px;">
+          ${isCastingThis ? `
+            <button class="btn-action danger btn-stop-cast-item" style="padding: 6px 12px; font-size: 12px; cursor: pointer;">
+              Dừng Chiếu
+            </button>
+          ` : `
+            <button class="btn-action primary btn-start-cast-item" style="padding: 6px 14px; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+              <span>▶️ Chiếu Lên PC</span>
+            </button>
+          `}
+        </div>
+      `;
+
+      const btnStart = card.querySelector('.btn-start-cast-item');
+      if (btnStart) {
+        btnStart.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.castBoardToPC(board);
+          const modal = document.getElementById('modal-cast-pc');
+          if (modal) modal.style.display = 'none';
+        });
+      }
+
+      const btnStop = card.querySelector('.btn-stop-cast-item');
+      if (btnStop) {
+        btnStop.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.stopCastPC();
+        });
+      }
+
+      container.appendChild(card);
+    });
+  }
+
   openGlobalLanSyncModal() {
     const modalSync = document.getElementById('modal-lan-sync');
     if (!modalSync) return;
+    const inputServerHost = document.getElementById('input-server-host');
+    if (inputServerHost && this.syncClient) {
+      inputServerHost.value = this.syncClient.getHost();
+    }
     modalSync.style.display = 'flex';
     this.renderLanSyncBoardsList();
   }
@@ -3633,13 +4231,13 @@ class NestedCanvasApp {
     }
 
     const port = window.location.port || '3000';
-    const host = this.syncClient?.localIp || window.location.hostname || 'localhost';
+    const host = this.syncClient?.localIp || this.syncClient?.getHost() || window.location.hostname || 'localhost';
 
     let selectedBoard = childBoards.find((b) => b.isShared) || childBoards[0];
 
     const updateSelectedBoardView = (board) => {
       selectedBoard = board;
-      const boardUrl = `${window.location.protocol}//${host}:${port}/?board=${board.id}`;
+      const boardUrl = `${window.location.protocol}//${host}:${port}/?board=${board.id}&server=${host}`;
       if (titleEl) titleEl.textContent = `Mã QR: ${board.name} ${board.isShared ? '🟢 (Đang mở)' : '⚪ (Chưa bật chia sẻ)'}`;
       if (inputUrl) inputUrl.value = boardUrl;
       if (qrSection) {

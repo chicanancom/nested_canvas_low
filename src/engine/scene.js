@@ -258,8 +258,8 @@ export class CanvasNode {
             bounds: this.graphData.bounds,
           }
         : null,
-      elements: (this.elements || []).map((s) => s.toJSON()),
-      children: (this.children || []).map((c) => c.toJSON()),
+      elements: (this.elements || []).map((s) => (typeof s?.toJSON === 'function' ? s.toJSON() : s)),
+      children: (this.children || []).map((c) => (typeof c?.toJSON === 'function' ? c.toJSON() : c)),
       textContent: this.textContent,
       isShared: !!this.isShared,
     };

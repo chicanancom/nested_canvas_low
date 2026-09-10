@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Nested Canvas</string>
+    <string name="title_activity_main">Nested Canvas</string>
+    <string name="package_name">io.nestedcanvas.app</string>
+    <string name="custom_url_scheme">io.nestedcanvas.app</string>
+</resources>

@@ -8,6 +8,13 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import http from 'http';
 import os from 'os';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const STATE_FILE = path.join(__dirname, 'data', 'sync_state.json');
 
 export function getLocalIp() {
   const ifaces = os.networkInterfaces();
@@ -33,6 +40,63 @@ export function startSyncServer(port = 8765) {
   const clientSubscriptions = new Map();
   // All connected clients
   const allClients = new Set();
+  // Active cast board for PC fullscreen display
+  let currentCastBoardId = null;
+  let currentCastBoardNode = null;
+  let lastCastCameraSync = null;
+
+  // Active full canvas mirror for non-interactive PC display
+  let lastCanvasScene = null;
+  let lastCanvasCamera = null;
+
+  let _saveStateTimer = null;
+  function scheduleSaveState() {
+    if (_saveStateTimer) clearTimeout(_saveStateTimer);
+    _saveStateTimer = setTimeout(() => {
+      _saveStateTimer = null;
+      try {
+        const data = {
+          currentCastBoardId,
+          currentCastBoardNode,
+          lastCastCameraSync,
+          lastCanvasScene,
+          lastCanvasCamera,
+          boardStates: Array.from(boardStates.entries()),
+          sharedBoards: Array.from(sharedBoards.entries()),
+          savedAt: Date.now(),
+        };
+        fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+        fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2), 'utf8');
+      } catch (e) {
+        console.warn('[SyncServer] Error saving state file:', e.message);
+      }
+    }, 200);
+  }
+
+  function loadPersistedState() {
+    try {
+      if (fs.existsSync(STATE_FILE)) {
+        const raw = fs.readFileSync(STATE_FILE, 'utf8');
+        const data = JSON.parse(raw);
+        if (data.currentCastBoardId) currentCastBoardId = data.currentCastBoardId;
+        if (data.currentCastBoardNode) currentCastBoardNode = data.currentCastBoardNode;
+        if (data.lastCastCameraSync) lastCastCameraSync = data.lastCastCameraSync;
+        if (data.lastCanvasScene) lastCanvasScene = data.lastCanvasScene;
+        if (data.lastCanvasCamera) lastCanvasCamera = data.lastCanvasCamera;
+        if (Array.isArray(data.boardStates)) {
+          for (const [k, v] of data.boardStates) boardStates.set(k, v);
+        }
+        if (Array.isArray(data.sharedBoards)) {
+          for (const [k, v] of data.sharedBoards) sharedBoards.set(k, v);
+        }
+        console.log(`[SyncServer] 💾 Restored persistent state: Cast board = ${currentCastBoardNode?.name || currentCastBoardId || 'none'}, Canvas Mirror = ${lastCanvasScene ? 'Ready' : 'None'}`);
+      }
+    } catch (e) {
+      console.warn('[SyncServer] Error loading state file:', e.message);
+    }
+  }
+
+  loadPersistedState();
 
   const server = http.createServer((req, res) => {
     if (req.url === '/health') {
@@ -140,12 +204,17 @@ export function startSyncServer(port = 8765) {
 
     console.log(`[SyncServer] 🟢 Client connected from ${clientIp}. Total online: ${allClients.size}`);
 
-    // Send WELCOME packet (strictly lists active shared child boards)
+    // Send WELCOME packet (strictly lists active shared child boards, current cast board and canvas mirror)
     sendToWs(ws, {
       type: 'WELCOME',
       count: allClients.size,
       local_ip: localIp,
       shared_boards: Array.from(sharedBoards.values()),
+      current_cast_board_id: currentCastBoardId,
+      current_cast_board_node: currentCastBoardNode,
+      last_cast_camera_sync: lastCastCameraSync,
+      last_canvas_scene: lastCanvasScene,
+      last_canvas_camera: lastCanvasCamera,
     });
 
     broadcastGlobalPresence();
@@ -160,6 +229,158 @@ export function startSyncServer(port = 8765) {
 
       const { type } = data;
       if (!type) return;
+
+      // 0. Full Canvas Mirror Protocol for PC Display
+      if (type === 'CANVAS_MIRROR') {
+        if (data.scene) {
+          lastCanvasScene = data.scene;
+        }
+        if (data.camera) {
+          lastCanvasCamera = data.camera;
+        }
+        scheduleSaveState();
+        broadcastToAll(JSON.stringify(data), ws);
+        return;
+      }
+
+      if (type === 'CANVAS_CAMERA_SYNC') {
+        lastCanvasCamera = data;
+        broadcastToAll(JSON.stringify(data), ws);
+        return;
+      }
+
+      if (type === 'GET_CANVAS_MIRROR') {
+        if (lastCanvasScene) {
+          sendToWs(ws, {
+            type: 'CANVAS_MIRROR',
+            scene: lastCanvasScene,
+            camera: lastCanvasCamera,
+          });
+        } else {
+          broadcastToAll(JSON.stringify({ type: 'PLEASE_UPLOAD_CANVAS_MIRROR' }), ws);
+        }
+        return;
+      }
+
+      if (type === 'CANVAS_STROKE_LIVE') {
+        broadcastToAll(JSON.stringify(data), ws);
+        return;
+      }
+
+      if (type === 'CANVAS_STROKE_ADD') {
+        const { nodeId, stroke } = data;
+        if (lastCanvasScene && nodeId && stroke) {
+          const root = lastCanvasScene.root || lastCanvasScene;
+          const target = findNodeInTree(root, nodeId);
+          if (target) {
+            if (!Array.isArray(target.elements)) target.elements = [];
+            if (!target.elements.some(s => s.id === stroke.id)) {
+              target.elements.push(stroke);
+            }
+            scheduleSaveState();
+          }
+        }
+        broadcastToAll(JSON.stringify(data), ws);
+        return;
+      }
+
+      if (type === 'CANVAS_STROKE_ERASE') {
+        const { nodeId, removedStrokeIds } = data;
+        if (lastCanvasScene && nodeId && Array.isArray(removedStrokeIds)) {
+          const root = lastCanvasScene.root || lastCanvasScene;
+          const target = findNodeInTree(root, nodeId);
+          if (target && Array.isArray(target.elements)) {
+            const idSet = new Set(removedStrokeIds);
+            target.elements = target.elements.filter(s => !idSet.has(s.id));
+            scheduleSaveState();
+          }
+        }
+        broadcastToAll(JSON.stringify(data), ws);
+        return;
+      }
+
+      if (type === 'CANVAS_STYLE') {
+        const { nodeId, style, gridType, isGlobal } = data;
+        if (lastCanvasScene) {
+          const root = lastCanvasScene.root || lastCanvasScene;
+          if (isGlobal) {
+            if (style) root.style = style;
+            if (gridType) root.gridType = gridType;
+            const updateRecursive = (n) => {
+              if (style) n.style = style;
+              if (gridType) n.gridType = gridType;
+              if (Array.isArray(n.children)) {
+                for (const c of n.children) updateRecursive(c);
+              }
+            };
+            if (Array.isArray(root.children)) {
+              for (const c of root.children) updateRecursive(c);
+            }
+          } else if (nodeId) {
+            const target = findNodeInTree(root, nodeId);
+            if (target) {
+              if (style) target.style = style;
+              if (gridType) target.gridType = gridType;
+            }
+          }
+          scheduleSaveState();
+        }
+        broadcastToAll(JSON.stringify(data), ws);
+        return;
+      }
+
+      // Legacy/Fallback Cast Board to PC Display Screen
+      if (type === 'CAST_BOARD') {
+        const { boardId, node } = data;
+        currentCastBoardId = boardId;
+        if (node) {
+          currentCastBoardNode = node;
+          boardStates.set(boardId, node);
+        } else if (boardStates.has(boardId)) {
+          currentCastBoardNode = boardStates.get(boardId);
+        }
+        console.log(`[SyncServer] 📺 Cast Board requested: ${boardId} (${currentCastBoardNode?.name || 'Unknown'})`);
+        scheduleSaveState();
+        broadcastToAll(JSON.stringify({
+          type: 'CAST_BOARD',
+          boardId: currentCastBoardId,
+          node: currentCastBoardNode,
+        }));
+        return;
+      }
+
+      if (type === 'STOP_CAST_BOARD') {
+        console.log(`[SyncServer] 📺 Cast Board stopped by client`);
+        currentCastBoardId = null;
+        currentCastBoardNode = null;
+        lastCastCameraSync = null;
+        scheduleSaveState();
+        broadcastToAll(JSON.stringify({
+          type: 'STOP_CAST_BOARD',
+        }));
+        return;
+      }
+
+      if (type === 'GET_CAST_BOARD') {
+        sendToWs(ws, {
+          type: 'CAST_BOARD',
+          boardId: currentCastBoardId,
+          node: currentCastBoardNode,
+          cameraSync: lastCastCameraSync,
+        });
+        return;
+      }
+
+      // Real-time camera zoom & pan synchronization for PC Display Screen
+      if (type === 'CAMERA_SYNC') {
+        const { boardId } = data;
+        if (boardId) {
+          lastCastCameraSync = data;
+          scheduleSaveState();
+          broadcastToAll(JSON.stringify(data), ws);
+        }
+        return;
+      }
 
       // 1. Host registers or unregisters a shared board
       if (type === 'SHARE_BOARD') {
@@ -190,6 +411,7 @@ export function startSyncServer(port = 8765) {
           clientSubscriptions.get(ws)?.delete(boardId);
           console.log(`[SyncServer] 📴 Board stopped sharing: ${boardId}`);
         }
+        scheduleSaveState();
 
         // Broadcast share status to all connected clients
         broadcastToAll(JSON.stringify({

@@ -1,0 +1,9 @@
+{
+  "appId": "io.nestedcanvas.app",
+  "appName": "Nested Canvas",
+  "webDir": "dist",
+  "server": {
+    "cleartext": true,
+    "androidScheme": "https"
+  }
+}

@@ -16,10 +16,16 @@ __pycache__/
 env/
 venv/
 
+# Android & APK Builds
+build-apk/
+android/.gradle/
+android/app/build/
+android/.idea/
+android/local.properties
+
 # OS & Editor
 .DS_Store
-Thumbs.db
-.idea/
 .vscode/
-*.swp
-*.swo
+
+# Server runtime state
+server/data/

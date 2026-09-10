@@ -107,8 +107,9 @@ export const BOARD_THEMES = {
 };
 
 export class CanvasRenderer {
-  constructor(canvas) {
+  constructor(canvas, options = {}) {
     this.canvas = canvas;
+    this.isDisplayMode = !!options.isDisplayMode;
     this.ctx = canvas.getContext('2d', { alpha: false });
     this.stats = {
       fps: 60,
@@ -140,7 +141,10 @@ export class CanvasRenderer {
     }
   }
 
-  render(scene, camera, selectedNodeId, activeSession, eraserCursor, ocrSelectionBox = null, ocrHighlightBoxes = null, remoteSessions = null) {
+  render(scene, camera, selectedNodeId, activeSession, eraserCursor, ocrSelectionBox = null, ocrHighlightBoxes = null, remoteSessions = null, options = null) {
+    if (options && typeof options.isDisplayMode === 'boolean') {
+      this.isDisplayMode = options.isDisplayMode;
+    }
     const ctx = this.ctx;
     const dpr = window.devicePixelRatio || 1;
 
@@ -579,29 +583,30 @@ export class CanvasRenderer {
     if (headerH > 10 && width > 30) {
       const centerY = minY + headerH * 0.5;
 
-      // Active indicator dot
-      if (width > 60) {
+      // Active indicator dot (chỉ hiện trên App)
+      if (!this.isDisplayMode && width > 60) {
         ctx.fillStyle = isSelected ? '#58a6ff' : theme.border;
         ctx.beginPath();
         ctx.arc(minX + 12, centerY, 3.5, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Title Text
-      if (width > 120) {
+      // Title Text: Trên màn chiếu CHỈ hiển thị tên bảng tinh gọn, không kèm số kích thước
+      if (width > (this.isDisplayMode ? 20 : 120)) {
         ctx.fillStyle = isSelected ? '#ffffff' : theme.text;
-        ctx.font = `${isSelected ? '600' : '500'} ${Math.max(11, Math.min(13, 12 * zoom))}px "Outfit", sans-serif`;
+        ctx.font = `${isSelected ? '600' : '500'} ${Math.max(11, Math.min(14, 12 * zoom))}px "Outfit", sans-serif`;
         ctx.textBaseline = 'middle';
-        const maxTitleW = Math.max(40, width - 180);
-        const rawTitle = `${node.name} (${Math.round(node.width)}×${Math.round(node.height)})`;
-        ctx.fillText(rawTitle, minX + 22, centerY, maxTitleW);
+        const startX = this.isDisplayMode ? minX + 14 : minX + 22;
+        const maxTitleW = this.isDisplayMode ? Math.max(20, width - 28) : Math.max(40, width - 180);
+        const rawTitle = this.isDisplayMode ? (node.name || 'Bảng') : `${node.name} (${Math.round(node.width)}×${Math.round(node.height)})`;
+        ctx.fillText(rawTitle, startX, centerY, maxTitleW);
       }
 
-      // --- Per-Board Action Toolbar (Thanh công cụ linh hoạt theo kích thước) ---
-
-      // 6. Nút Đóng / Xóa bảng (Delete Board ✕) - Luôn hiển thị
-      const btnDelX = minX + width - 12;
-      ctx.fillStyle = isSelected ? 'rgba(248, 81, 73, 0.2)' : 'rgba(255, 255, 255, 0.08)';
+      // --- Per-Board Action Toolbar (Chỉ hiển thị trên App điều khiển, ẩn hoàn toàn trên Màn Chiếu PC) ---
+      if (!this.isDisplayMode) {
+        // 6. Nút Đóng / Xóa bảng (Delete Board ✕) - Luôn hiển thị
+        const btnDelX = minX + width - 12;
+        ctx.fillStyle = isSelected ? 'rgba(248, 81, 73, 0.2)' : 'rgba(255, 255, 255, 0.08)';
       ctx.beginPath();
       ctx.roundRect(btnDelX - 8, centerY - 8, 16, 16, 4);
       ctx.fill();
@@ -783,6 +788,7 @@ export class CanvasRenderer {
         ctx.moveTo(btnAddGraphX - 3.5, centerY + 1);
         ctx.quadraticCurveTo(btnAddGraphX, centerY + 3.5, btnAddGraphX + 3.5, centerY - 2.5);
         ctx.stroke();
+      }
       }
     }
 
