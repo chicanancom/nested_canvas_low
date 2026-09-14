@@ -56,7 +56,7 @@ export class SyncClient {
     const isCapacitor = !!(window.Capacitor?.isNativePlatform() || window.location.protocol === 'capacitor:' || (window.location.hostname === 'localhost' && (!window.location.port || window.location.port === '')));
     if (isCapacitor) {
       // Mặc định trỏ về IP của máy tính đang chạy backend
-      return '192.168.1.76';
+      return '192.168.1.121';
     }
 
     return window.location.hostname || 'localhost';
@@ -136,7 +136,7 @@ export class SyncClient {
   }
 
   /**
-   * Quét nhanh tìm máy chủ PC NestedCanvas qua HTTP GET /health
+   * Quét nhanh tìm máy chủ PC NestedCanvas qua HTTP GET /health hoặc WebSocket probe
    * @param {Object} opts
    * @param {number} opts.timeoutMs - Timeout mỗi request ping (mặc định 600ms)
    * @param {Function} opts.onProgress - Callback cập nhật tiến độ ({ scanned, total, currentIp })
@@ -150,8 +150,8 @@ export class SyncClient {
 
     console.log('[SyncClient] 🔍 Starting LAN Auto-Discovery on port', port);
 
-    // 1. Thử ping nhanh máy chủ host hiện tại và localhost trước
-    const quickTargets = [this.host, '127.0.0.1', 'localhost'].filter(Boolean);
+    // 1. Thử ping nhanh máy chủ host hiện tại, 192.168.1.121 và localhost trước
+    const quickTargets = Array.from(new Set([this.host, '192.168.1.121', '127.0.0.1', 'localhost'].filter(Boolean)));
     for (const target of quickTargets) {
       const res = await this._pingServer(target, port, 400);
       if (res.success) {
@@ -166,14 +166,17 @@ export class SyncClient {
     const candidateSubnets = await this._detectSubnetCandidates();
 
     // 3. Tạo danh sách IP để quét
-    // Ưu tiên dải từ .2 đến .150 (nơi thường cấp DHCP cho laptop/PC), sau đó đến .151-.254
+    // Ưu tiên dải từ .100 đến .150 trước (nơi modem thường cấp DHCP cho laptop/PC), sau đó đến .2-.99 và .151-.254
     const ipList = [];
     for (const subnet of candidateSubnets) {
-      // Ưu tiên quét IP trước
-      for (let i = 2; i <= 120; i++) {
+      // Dải ưu tiên cao nhất
+      for (let i = 100; i <= 150; i++) {
         ipList.push(`${subnet}${i}`);
       }
-      for (let i = 121; i <= 254; i++) {
+      for (let i = 2; i < 100; i++) {
+        ipList.push(`${subnet}${i}`);
+      }
+      for (let i = 151; i <= 254; i++) {
         ipList.push(`${subnet}${i}`);
       }
     }
@@ -237,6 +240,7 @@ export class SyncClient {
       });
     }
 
+    // 1. Thử HTTP GET /health trước
     try {
       const url = `http://${ip}:${port}/health`;
       const res = await fetch(url, {
@@ -244,18 +248,58 @@ export class SyncClient {
         signal: controller.signal,
         headers: { 'Accept': 'application/json' },
       });
-      clearTimeout(timeoutId);
       if (res.ok) {
         const data = await res.json();
         if (data && (data.app === 'nestedcanvas' || data.server?.includes('NestedCanvas'))) {
+          clearTimeout(timeoutId);
           return { success: true, data };
         }
       }
     } catch (e) {
-      // Timeout hoặc kết nối thất bại
-    } finally {
-      clearTimeout(timeoutId);
+      // Fetch có thể bị lỗi mạng hoặc Mixed-Content trên một số WebView
     }
+
+    // 2. Thử WebSocket probe handshake trực tiếp nếu fetch chưa được
+    if (!controller.signal.aborted) {
+      try {
+        const wsOk = await new Promise((resolve) => {
+          let ws = null;
+          let settled = false;
+          const finish = (result) => {
+            if (settled) return;
+            settled = true;
+            if (ws) {
+              try { ws.close(); } catch (_) {}
+            }
+            resolve(result);
+          };
+
+          const wsTimer = setTimeout(() => finish(false), Math.min(350, timeoutMs));
+
+          try {
+            ws = new WebSocket(`ws://${ip}:${port}`);
+            ws.onopen = () => {
+              clearTimeout(wsTimer);
+              finish(true);
+            };
+            ws.onerror = () => {
+              clearTimeout(wsTimer);
+              finish(false);
+            };
+          } catch (_) {
+            clearTimeout(wsTimer);
+            finish(false);
+          }
+        });
+
+        if (wsOk) {
+          clearTimeout(timeoutId);
+          return { success: true, data: { app: 'nestedcanvas', ip, port } };
+        }
+      } catch (e) {}
+    }
+
+    clearTimeout(timeoutId);
     return { success: false };
   }
 
