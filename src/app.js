@@ -15,6 +15,8 @@ import {
 } from './engine/history.js';
 import { CanvasRenderer, BOARD_THEMES } from './engine/renderer.js';
 import { SyncClient } from './sync/client.js';
+import { SessionManager, DEFAULT_EMPTY_THUMBNAIL } from './storage/sessionManager.js';
+import { db } from './storage/db.js';
 
 class NestedCanvasApp {
   constructor() {
@@ -22,6 +24,7 @@ class NestedCanvasApp {
     this.isApplyingRemoteSync = false;
     this.remoteActiveSessions = new Map();
     this.syncClient = null;
+    this.sessionManager = null;
 
     this.canvas = document.getElementById('canvas');
     this.renderer = new CanvasRenderer(this.canvas);
@@ -83,9 +86,17 @@ class NestedCanvasApp {
     this.initialPinchZoom = null;
     this._savedCastBoardId = null;
 
+    // Chế Độ Tập Trung (Focus Mode - Bảo toàn bố cục bảng chính 100%)
+    this.isFocusMode = false;
+    this.focusNodeId = null;
+    this.savedPreFocusCamera = null;
+    this.focusSyncDisplay = false; // Mặc định: Giữ nguyên bố cục màn chiếu PC, không zoom theo
+
     this.initDefaultScene();
     this.bindEvents();
     this.initLANSync();
+    this.initSessionStorage();
+    this.initSessionUI();
     this.initCastPCControls();
     if (this._savedCastBoardId) {
       const node = this.scene.getNode(this._savedCastBoardId);
@@ -144,24 +155,593 @@ class NestedCanvasApp {
 
       if (this.isApplyingRemoteSync) return;
 
-      const data = {
-        version: 1,
-        savedAt: Date.now(),
-        boardCounter: this.boardCounter || 0,
-        selectedNodeId: this.selectedNodeId,
-        currentCastBoardId: this.syncClient?.currentCastBoardId || null,
-        camera: {
-          zoom: this.camera.zoom,
-          pan: { x: this.camera.pan.x, y: this.camera.pan.y },
-        },
-        scene: this.scene.toJSON(),
-      };
-      localStorage.setItem('nestedcanvas_workspace_state', JSON.stringify(data));
+      // Lưu trữ thông minh vào IndexedDB không giới hạn dung lượng & không giật lag
+      if (this.sessionManager) {
+        this.sessionManager.scheduleAutoSave(
+          this.scene,
+          this.camera,
+          this.boardCounter || 0,
+          this.selectedNodeId,
+          this.syncClient?.currentCastBoardId || null
+        );
+      }
+
       if (this.syncClient && this.syncClient.isConnected) {
         this.broadcastCanvasMirror();
       }
     } catch (e) {
       console.warn('[Storage] Error saving workspace state:', e);
+    }
+  }
+
+  async initSessionStorage() {
+    if (this.isSingleBoardMode) return;
+    try {
+      this.sessionManager = new SessionManager({
+        syncClient: this.syncClient,
+        onSessionChange: (meta) => {
+          this.updateActiveSessionUI(meta);
+        },
+      });
+
+      const session = await this.sessionManager.init({
+        scene: this.scene.toJSON(),
+        camera: { zoom: this.camera.zoom, pan: { x: this.camera.pan.x, y: this.camera.pan.y } },
+      });
+
+      if (session && session.content) {
+        this.applySessionContent(session.content);
+      }
+      this.updateActiveSessionUI(this.sessionManager.getCurrentSessionMeta());
+    } catch (err) {
+      console.warn('[SessionManager] Init error:', err);
+    }
+  }
+
+  applySessionContent(content) {
+    if (!content) return;
+    try {
+      if (content.scene && content.scene.root) {
+        this.scene.loadFromJSON(content.scene);
+      }
+      if (typeof content.boardCounter === 'number') {
+        this.boardCounter = content.boardCounter;
+      }
+      if (content.camera) {
+        if (typeof content.camera.zoom === 'number' && content.camera.zoom > 0) {
+          this.camera.zoom = content.camera.zoom;
+        }
+        if (content.camera.pan && typeof content.camera.pan.x === 'number') {
+          this.camera.pan = new Vec2(content.camera.pan.x, content.camera.pan.y);
+        }
+      }
+      if (content.selectedNodeId && this.scene.getNode(content.selectedNodeId)) {
+        this.selectedNodeId = content.selectedNodeId;
+      } else if (this.scene.root.children.length > 0) {
+        this.selectedNodeId = this.scene.root.children[0].id;
+      } else {
+        this.selectedNodeId = null;
+      }
+
+      this.history.clear();
+
+      if (this.syncClient && this.syncClient.isConnected) {
+        this.broadcastCanvasMirror();
+      }
+    } catch (e) {
+      console.warn('[SessionManager] Error applying session content:', e);
+    }
+  }
+
+  updateActiveSessionUI(meta) {
+    const label = document.getElementById('label-active-session-name');
+    if (label && meta) {
+      label.textContent = meta.name || 'Phiên làm việc';
+      label.title = `Phiên hiện tại: ${meta.name}`;
+    }
+  }
+
+  initSessionUI() {
+    const btnOpenSessions = document.getElementById('btn-open-sessions');
+    const modalSessions = document.getElementById('modal-sessions');
+    const btnCloseSessions = document.getElementById('btn-close-sessions-modal');
+    const inputSearch = document.getElementById('input-search-sessions');
+    const btnCreateSession = document.getElementById('btn-create-session-modal');
+    const btnImportSession = document.getElementById('btn-import-session-modal');
+    const inputImport = document.getElementById('input-import-session');
+
+    if (btnOpenSessions && modalSessions) {
+      btnOpenSessions.addEventListener('click', (e) => {
+        e.stopPropagation();
+        modalSessions.style.display = 'flex';
+        if (inputSearch) inputSearch.value = '';
+        this.renderSessionsGrid();
+      });
+    }
+
+    if (btnCloseSessions && modalSessions) {
+      btnCloseSessions.addEventListener('click', (e) => {
+        e.stopPropagation();
+        modalSessions.style.display = 'none';
+      });
+    }
+
+    if (modalSessions) {
+      modalSessions.addEventListener('click', (e) => {
+        if (e.target === modalSessions) {
+          modalSessions.style.display = 'none';
+        }
+      });
+    }
+
+    if (inputSearch) {
+      inputSearch.addEventListener('input', () => {
+        this.renderSessionsGrid(inputSearch.value.trim());
+      });
+    }
+
+    if (btnCreateSession) {
+      btnCreateSession.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const name = await this._promptSessionName('Tạo Phiên Làm Việc Mới', 'Bảng mới');
+        if (name && name.trim()) {
+          await this.createNewSession(name.trim());
+        }
+      });
+    }
+
+    if (btnImportSession && inputImport) {
+      btnImportSession.addEventListener('click', (e) => {
+        e.stopPropagation();
+        inputImport.value = '';
+        inputImport.click();
+      });
+
+      inputImport.addEventListener('change', async (e) => {
+        const file = e.target.files?.[0];
+        if (file) {
+          await this.importSessionFile(file);
+        }
+      });
+    }
+  }
+
+  async importSessionFile(file) {
+    if (!file) return;
+    try {
+      this.showToast(`⏳ Đang nạp bài giảng "${file.name}"...`, 1500);
+      const text = await file.text();
+      const importedMeta = await this.sessionManager.importSession(text);
+      // Tự động chuyển ngay sang bài giảng vừa nạp để dạy ngay
+      await this.switchSession(importedMeta.id);
+      this.showToast(`✨ Đã mở thành công bài giảng: "${importedMeta.name}"!`, 3500);
+      const modalSessions = document.getElementById('modal-sessions');
+      if (modalSessions) modalSessions.style.display = 'none';
+      this.renderSessionsGrid();
+    } catch (err) {
+      console.error('[SessionManager] Import failed:', err);
+      this.showToast(`❌ Không thể nạp file: ${err.message}`, 4000);
+    }
+  }
+
+  _promptSessionName(title, defaultValue = '') {
+    return new Promise((resolve) => {
+      const modal = document.getElementById('modal-session-prompt');
+      const titleEl = document.getElementById('session-prompt-title');
+      const input = document.getElementById('input-session-prompt-name');
+      const btnCancel = document.getElementById('btn-cancel-session-prompt');
+      const btnConfirm = document.getElementById('btn-confirm-session-prompt');
+
+      if (!modal || !input || !btnConfirm || !btnCancel) {
+        const res = window.prompt(title, defaultValue);
+        return resolve(res);
+      }
+
+      if (titleEl) titleEl.textContent = title;
+      input.value = defaultValue;
+      modal.style.display = 'flex';
+      setTimeout(() => {
+        input.focus();
+        input.select();
+      }, 50);
+
+      const cleanup = () => {
+        modal.style.display = 'none';
+        btnConfirm.onclick = null;
+        btnCancel.onclick = null;
+        input.onkeydown = null;
+      };
+
+      btnConfirm.onclick = (e) => {
+        e.stopPropagation();
+        const val = input.value.trim();
+        cleanup();
+        resolve(val || null);
+      };
+
+      btnCancel.onclick = (e) => {
+        e.stopPropagation();
+        cleanup();
+        resolve(null);
+      };
+
+      input.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const val = input.value.trim();
+          cleanup();
+          resolve(val || null);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          cleanup();
+          resolve(null);
+        }
+      };
+    });
+  }
+
+  async createNewSession(name) {
+    if (!this.sessionManager) return;
+    try {
+      // Lưu phiên hiện tại trước khi tạo phiên mới
+      await this.sessionManager.flushSave();
+
+      const session = await this.sessionManager.createSession(name);
+      if (session && session.content) {
+        this.applySessionContent(session.content);
+      }
+      this.updateActiveSessionUI(session.meta);
+      this.showToast(`✨ Đã mở phiên mới: "${session.meta.name}"`, 3000);
+
+      const modalSessions = document.getElementById('modal-sessions');
+      if (modalSessions) modalSessions.style.display = 'none';
+    } catch (err) {
+      console.error('[SessionManager] Create session error:', err);
+      this.showToast(`❌ Lỗi tạo phiên: ${err.message}`, 3000);
+    }
+  }
+
+  async switchSession(sessionId) {
+    if (!this.sessionManager || this.sessionManager.getCurrentSessionId() === sessionId) {
+      const modalSessions = document.getElementById('modal-sessions');
+      if (modalSessions) modalSessions.style.display = 'none';
+      return;
+    }
+
+    try {
+      this.showToast('⏳ Đang nạp bài giảng...', 1500);
+      const session = await this.sessionManager.switchSession(sessionId);
+      if (session && session.content) {
+        this.applySessionContent(session.content);
+        this.updateActiveSessionUI(session.meta);
+        this.showToast(`📖 Đã mở: "${session.meta.name}"`, 3000);
+      }
+      const modalSessions = document.getElementById('modal-sessions');
+      if (modalSessions) modalSessions.style.display = 'none';
+    } catch (err) {
+      console.error('[SessionManager] Switch error:', err);
+      this.showToast(`❌ Lỗi chuyển phiên: ${err.message}`, 3000);
+    }
+  }
+
+  async renderSessionsGrid(filterText = '') {
+    const grid = document.getElementById('sessions-grid');
+    const countLabel = document.getElementById('sessions-count-label');
+    if (!grid) return;
+
+    try {
+      const allSessions = await db.getAllSessions();
+      const currentId = this.sessionManager?.getCurrentSessionId();
+
+      let filtered = allSessions;
+      if (filterText) {
+        const lower = filterText.toLowerCase();
+        filtered = allSessions.filter((s) => (s.name || '').toLowerCase().includes(lower));
+      }
+
+      if (countLabel) {
+        countLabel.textContent = `Tổng cộng: ${allSessions.length} phiên làm việc`;
+      }
+
+      if (filtered.length === 0) {
+        grid.innerHTML = `
+          <div style="grid-column: 1 / -1; padding: 40px 20px; text-align: center; color: var(--text-muted); display: flex; flex-direction: column; align-items: center; gap: 8px;">
+            <span style="font-size: 32px;">📭</span>
+            <span style="font-size: 13px;">Không tìm thấy phiên làm việc nào phù hợp</span>
+          </div>
+        `;
+        return;
+      }
+
+      grid.innerHTML = '';
+
+      for (const s of filtered) {
+        const isActive = s.id === currentId;
+        const card = document.createElement('div');
+        card.className = `session-card ${isActive ? 'active' : ''}`;
+
+        // Format relative time
+        let timeStr = 'Mới đây';
+        if (s.updatedAt) {
+          const diffMin = Math.floor((Date.now() - s.updatedAt) / 60000);
+          if (diffMin < 1) timeStr = 'Vừa xong';
+          else if (diffMin < 60) timeStr = `${diffMin} phút trước`;
+          else {
+            const diffHour = Math.floor(diffMin / 60);
+            if (diffHour < 24) timeStr = `${diffHour} giờ trước`;
+            else {
+              const d = new Date(s.updatedAt);
+              timeStr = `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
+            }
+          }
+        }
+
+        let thumbSrc = DEFAULT_EMPTY_THUMBNAIL;
+        if (s.thumbnail && typeof s.thumbnail === 'string') {
+          if (s.thumbnail.startsWith('data:image/webp') || s.thumbnail.startsWith('data:image/png') || s.thumbnail.startsWith('data:image/jpeg')) {
+            thumbSrc = s.thumbnail;
+          } else if (s.thumbnail.startsWith('data:image/svg+xml') && !s.thumbnail.includes('"')) {
+            thumbSrc = s.thumbnail;
+          }
+        }
+
+        card.innerHTML = `
+          <div class="session-card-thumb-wrap" title="Nhấn để mở phiên này">
+            <img src="${thumbSrc}" class="session-card-thumb" alt="Thumbnail" onerror="this.onerror=null; this.src='${DEFAULT_EMPTY_THUMBNAIL}';" />
+            ${isActive ? '<div class="session-card-badge-active">🟢 Đang mở</div>' : ''}
+          </div>
+          <div class="session-card-body">
+            <div class="session-card-title" title="${s.name}">${s.name || 'Phiên không tên'}</div>
+            <div class="session-card-meta">
+              <span>🕒 ${timeStr}</span>
+              <span>📋 ${s.boardCount || 0} bảng • ✏️ ${s.strokeCount || 0} nét</span>
+            </div>
+            <div class="session-card-actions">
+              <button class="session-btn-open" title="Mở làm việc trên phiên này">
+                ${isActive ? '✓ Đang mở' : '▶ Mở bài'}
+              </button>
+              <button class="session-btn-icon btn-rename-session" title="Đổi tên phiên">✏️</button>
+              <button class="session-btn-icon btn-dup-session" title="Nhân bản (Duplicate)">📋</button>
+              <button class="session-btn-icon btn-export-session" title="Xuất bài giảng ra file (JSON, PDF, SVG)">📤</button>
+              <button class="session-btn-icon danger btn-del-session" title="Xóa phiên này">🗑️</button>
+            </div>
+          </div>
+        `;
+
+        // Sự kiện click mở phiên
+        const thumbWrap = card.querySelector('.session-card-thumb-wrap');
+        const btnOpen = card.querySelector('.session-btn-open');
+        const openHandler = () => this.switchSession(s.id);
+        thumbWrap.addEventListener('click', openHandler);
+        btnOpen.addEventListener('click', openHandler);
+
+        // Đổi tên
+        const btnRename = card.querySelector('.btn-rename-session');
+        btnRename.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const newName = await this._promptSessionName('Đổi Tên Phiên Làm Việc', s.name);
+          if (newName && newName.trim() && newName.trim() !== s.name) {
+            await this.sessionManager.renameSession(s.id, newName.trim());
+            this.showToast(`✏️ Đã đổi tên thành: "${newName.trim()}"`, 2500);
+            this.renderSessionsGrid(filterText);
+          }
+        });
+
+        // Nhân bản
+        const btnDup = card.querySelector('.btn-dup-session');
+        btnDup.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const dupMeta = await this.sessionManager.duplicateSession(s.id);
+          if (dupMeta) {
+            this.showToast(`📋 Đã tạo bản sao: "${dupMeta.name}"`, 2500);
+            this.renderSessionsGrid(filterText);
+          }
+        });
+
+        // Xuất file đa định dạng (PDF, HTML, SVG)
+        const btnExport = card.querySelector('.btn-export-session');
+        btnExport.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.openExportOptionsModal(s);
+        });
+
+        // Xóa phiên
+        const btnDel = card.querySelector('.btn-del-session');
+        btnDel.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          if (allSessions.length <= 1) {
+            this.showToast('⚠️ Không thể xóa phiên duy nhất còn lại!', 3000);
+            return;
+          }
+          if (window.confirm(`Bạn có chắc chắn muốn xóa vĩnh viễn bài giảng "${s.name}" không?`)) {
+            await this.sessionManager.deleteSession(s.id);
+            this.showToast(`🗑️ Đã xóa phiên: "${s.name}"`, 2500);
+            this.renderSessionsGrid(filterText);
+          }
+        });
+
+        grid.appendChild(card);
+      }
+    } catch (err) {
+      console.error('[SessionManager] Render grid error:', err);
+    }
+  }
+
+  async openExportOptionsModal(s) {
+    const modal = document.getElementById('modal-export-options');
+    const subtitle = document.getElementById('export-session-name-subtitle');
+    const btnClose = document.getElementById('btn-close-export-modal');
+    const scopeAll = document.getElementById('scope-all');
+    const scopeCustom = document.getElementById('scope-custom');
+    const scopeActions = document.getElementById('export-scope-actions');
+    const btnSelectAll = document.getElementById('btn-export-select-all');
+    const btnDeselectAll = document.getElementById('btn-export-deselect-all');
+    const checklistContainer = document.getElementById('export-boards-checklist');
+    const btnJson = document.getElementById('btn-export-opt-json');
+    const btnPdf = document.getElementById('btn-export-opt-pdf');
+    const btnSvg = document.getElementById('btn-export-opt-svg');
+
+    if (!modal) return;
+    if (subtitle) subtitle.textContent = `Bài giảng: "${s.name}"`;
+    modal.style.display = 'flex';
+
+    // Reset phạm vi về "Tất cả"
+    if (scopeAll) scopeAll.checked = true;
+    if (scopeCustom) scopeCustom.checked = false;
+    if (checklistContainer) {
+      checklistContainer.style.display = 'none';
+      checklistContainer.innerHTML = '<div style="font-size:11px;color:#8b949e;padding:6px 0;">⏳ Đang nạp danh sách bảng...</div>';
+    }
+    if (scopeActions) scopeActions.style.display = 'none';
+
+    const escapeHTML = (str) =>
+      String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+
+    // Nạp danh sách bảng
+    try {
+      const boards = await this.sessionManager.getSessionBoards(s.id);
+      if (checklistContainer) {
+        checklistContainer.innerHTML = '';
+        if (!boards || boards.length === 0) {
+          checklistContainer.innerHTML = '<div style="font-size:11px;color:#8b949e;padding:4px 0;">Không tìm thấy bảng con nào.</div>';
+        } else {
+          boards.forEach((b) => {
+            const label = document.createElement('label');
+            label.style.display = 'flex';
+            label.style.alignItems = 'center';
+            label.style.gap = '8px';
+            label.style.padding = '5px 8px';
+            label.style.borderRadius = '6px';
+            label.style.background = 'rgba(255,255,255,0.03)';
+            label.style.cursor = 'pointer';
+            label.style.fontSize = '12px';
+            label.style.transition = 'background 0.15s';
+            label.onmouseover = () => { label.style.background = 'rgba(255,255,255,0.08)'; };
+            label.onmouseout = () => { label.style.background = 'rgba(255,255,255,0.03)'; };
+
+            const indent = b.level > 0 ? '&nbsp;'.repeat(b.level * 3) + '└─ ' : '';
+            const icon = b.isRoot ? '🌍' : '📑';
+            label.innerHTML = `
+              <input type="checkbox" class="export-board-cb" value="${b.id}" checked style="cursor:pointer;" />
+              <span style="color:${b.isRoot ? '#58a6ff' : '#f0f6fc'}; user-select:none;">
+                ${indent}${icon} <strong>${escapeHTML(b.name)}</strong>
+                <span style="font-size:11px;opacity:0.6;margin-left:4px">(${b.strokeCount} nét)</span>
+              </span>
+            `;
+            checklistContainer.appendChild(label);
+          });
+        }
+      }
+    } catch (err) {
+      console.error('[ExportModal] Error loading boards:', err);
+    }
+
+    const updateScopeUI = () => {
+      const isCustom = scopeCustom && scopeCustom.checked;
+      if (checklistContainer) checklistContainer.style.display = isCustom ? 'flex' : 'none';
+      if (scopeActions) scopeActions.style.display = isCustom ? 'flex' : 'none';
+    };
+
+    if (scopeAll) scopeAll.onchange = updateScopeUI;
+    if (scopeCustom) scopeCustom.onchange = updateScopeUI;
+
+    if (btnSelectAll) {
+      btnSelectAll.onclick = (e) => {
+        e.preventDefault();
+        modal.querySelectorAll('.export-board-cb').forEach((cb) => (cb.checked = true));
+      };
+    }
+    if (btnDeselectAll) {
+      btnDeselectAll.onclick = (e) => {
+        e.preventDefault();
+        modal.querySelectorAll('.export-board-cb').forEach((cb) => (cb.checked = false));
+      };
+    }
+
+    const getSelectedBoardIds = () => {
+      if (!scopeCustom || !scopeCustom.checked) {
+        return null; // Toàn bộ
+      }
+      const cbs = Array.from(modal.querySelectorAll('.export-board-cb:checked'));
+      if (cbs.length === 0) {
+        this.showToast('⚠️ Vui lòng chọn ít nhất 1 bảng để xuất!', 3000);
+        return false;
+      }
+      return cbs.map((cb) => cb.value);
+    };
+
+    const close = () => {
+      modal.style.display = 'none';
+      if (btnClose) btnClose.onclick = null;
+      if (btnJson) btnJson.onclick = null;
+      if (btnPdf) btnPdf.onclick = null;
+      if (btnSvg) btnSvg.onclick = null;
+      if (scopeAll) scopeAll.onchange = null;
+      if (scopeCustom) scopeCustom.onchange = null;
+      if (btnSelectAll) btnSelectAll.onclick = null;
+      if (btnDeselectAll) btnDeselectAll.onclick = null;
+      modal.onclick = null;
+    };
+
+    if (btnClose) btnClose.onclick = (e) => { e.stopPropagation(); close(); };
+    modal.onclick = (e) => { if (e.target === modal) close(); };
+
+    // 1. Xuất Tệp Dữ Liệu JSON Chuẩn (Để nạp vào phòng khác)
+    if (btnJson) {
+      btnJson.onclick = async (e) => {
+        e.stopPropagation();
+        const selected = getSelectedBoardIds();
+        if (selected === false) return;
+        close();
+        this.showToast('⏳ Đang xuất tệp dữ liệu JSON...', 1500);
+        try {
+          await this.sessionManager.exportSessionJSON(s.id, selected);
+          this.showToast(`📦 Đã tải tệp bài giảng: "${s.name}.json"!`, 3500);
+        } catch (err) {
+          console.error('[Export JSON] Error:', err);
+          this.showToast('❌ Lỗi khi xuất JSON: ' + err.message, 4000);
+        }
+      };
+    }
+
+    // 2. Xuất Tài Liệu PDF Phân Trang
+    if (btnPdf) {
+      btnPdf.onclick = async (e) => {
+        e.stopPropagation();
+        const selected = getSelectedBoardIds();
+        if (selected === false) return;
+        close();
+        this.showToast('⏳ Đang tạo tài liệu PDF phân trang...', 2000);
+        try {
+          await this.sessionManager.exportSessionPDF(s.id, selected);
+          this.showToast(`📄 Đã tải file PDF: "${s.name}.pdf"!`, 3500);
+        } catch (err) {
+          console.error('[Export PDF] Error:', err);
+          this.showToast('❌ Lỗi khi xuất PDF: ' + err.message, 4000);
+        }
+      };
+    }
+
+    // 3. Xuất Ảnh Vector SVG
+    if (btnSvg) {
+      btnSvg.onclick = async (e) => {
+        e.stopPropagation();
+        const selected = getSelectedBoardIds();
+        if (selected === false) return;
+        close();
+        this.showToast('⏳ Đang xuất ảnh Vector...', 1500);
+        try {
+          await this.sessionManager.exportSessionSVG(s.id, selected);
+          this.showToast(`🖼️ Đã tải ảnh Vector SVG: "${s.name}.svg"!`, 3500);
+        } catch (err) {
+          console.error('[Export SVG] Error:', err);
+          this.showToast('❌ Lỗi khi xuất SVG: ' + err.message, 4000);
+        }
+      };
     }
   }
 
@@ -189,6 +769,7 @@ class NestedCanvasApp {
         return true;
       }
 
+      // Khi không phải single board mode, dữ liệu sẽ do initSessionStorage đảm nhiệm
       const raw = localStorage.getItem('nestedcanvas_workspace_state');
       if (!raw) return false;
       const data = JSON.parse(raw);
@@ -287,6 +868,35 @@ class NestedCanvasApp {
       }
     });
 
+    // Điều khiển mở / đóng Drawer Cây phân cấp trên thiết bị di động
+    const btnToggleInspector = document.getElementById('btn-toggle-inspector');
+    const btnCloseInspector = document.getElementById('btn-close-inspector');
+    const inspectorPanel = document.getElementById('inspector-panel');
+
+    if (btnToggleInspector && inspectorPanel) {
+      btnToggleInspector.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpen = inspectorPanel.classList.toggle('mobile-open');
+        btnToggleInspector.classList.toggle('active', isOpen);
+      });
+    }
+
+    if (btnCloseInspector && inspectorPanel) {
+      btnCloseInspector.addEventListener('click', (e) => {
+        e.stopPropagation();
+        inspectorPanel.classList.remove('mobile-open');
+        btnToggleInspector?.classList.remove('active');
+      });
+    }
+
+    // Khi chạm vào canvas trên điện thoại, tự động ẩn Drawer mục lục
+    this.canvas.addEventListener('pointerdown', () => {
+      if (window.innerWidth <= 768 && inspectorPanel?.classList.contains('mobile-open')) {
+        inspectorPanel.classList.remove('mobile-open');
+        btnToggleInspector?.classList.remove('active');
+      }
+    });
+
     // Tool buttons
     document.querySelectorAll('.tool-btn[data-tool]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -347,11 +957,6 @@ class NestedCanvasApp {
     document.getElementById('btn-undo').addEventListener('click', () => this.undo());
     document.getElementById('btn-redo').addEventListener('click', () => this.redo());
 
-    // Nút "Sắp Xếp Bảng" (Compact Arrange Boards)
-    document.getElementById('btn-arrange').addEventListener('click', () => {
-      this.arrangeAllBoardsCompact();
-    });
-
     // Thêm bảng mới
     document.getElementById('btn-add-sample').addEventListener('click', () => {
       this.createNewBoard();
@@ -365,6 +970,31 @@ class NestedCanvasApp {
     if (desmosBtn) {
       desmosBtn.addEventListener('click', () => {
         this.createDesmosBoard();
+      });
+    }
+
+    // Chế Độ Tập Trung (Focus Mode Buttons)
+    const topFocusBtn = document.getElementById('btn-top-focus');
+    if (topFocusBtn) {
+      topFocusBtn.addEventListener('click', () => {
+        if (this.selectedNodeId && this.selectedNodeId !== this.scene.root.id) {
+          const node = this.scene.getNode(this.selectedNodeId);
+          if (node) this.toggleFocusMode(node);
+        }
+      });
+    }
+
+    const exitFocusBtn = document.getElementById('btn-exit-focus-mode');
+    if (exitFocusBtn) {
+      exitFocusBtn.addEventListener('click', () => {
+        this.exitFocusMode();
+      });
+    }
+
+    const toggleDisplaySyncBtn = document.getElementById('btn-focus-toggle-display');
+    if (toggleDisplaySyncBtn) {
+      toggleDisplaySyncBtn.addEventListener('click', () => {
+        this.toggleFocusDisplaySync();
       });
     }
 
@@ -397,12 +1027,17 @@ class NestedCanvasApp {
       }
     });
 
-    // Kéo thả file ảnh vào màn hình (Drag & Drop Image)
+    // Kéo thả tệp bài giảng JSON hoặc ảnh vào màn hình
     window.addEventListener('dragover', (e) => e.preventDefault());
     window.addEventListener('drop', (e) => {
       e.preventDefault();
       if (e.dataTransfer?.files?.length > 0) {
         const file = e.dataTransfer.files[0];
+        const lower = (file.name || '').toLowerCase();
+        if (lower.endsWith('.json') || lower.endsWith('.nested') || lower.endsWith('.html')) {
+          this.importSessionFile(file);
+          return;
+        }
         const screenPos = new Vec2(e.clientX, e.clientY);
         const hit = this.hitTestBoard(screenPos);
         const targetNode = hit && hit.action === 'body' ? hit.node : this.scene.root;
@@ -687,7 +1322,7 @@ class NestedCanvasApp {
         return;
       }
       if (hit && hit.action === 'maximize') {
-        this.focusBoardFullscreen(hit.node);
+        this.toggleFocusMode(hit.node);
         return;
       }
       if (hit && hit.action === 'clear') {
@@ -701,6 +1336,14 @@ class NestedCanvasApp {
 
       // 2. Xử lý 8 điểm neo co giãn kích thước (Resize Handles)
       if (hit && hit.action === 'resize') {
+        if (this.isFocusMode) {
+          const focusNode = this.scene.getNode(this.focusNodeId) || this.scene.root;
+          // Khóa thay đổi kích thước của bảng tập trung mẹ để giữ khung nhìn ổn định.
+          // Nhưng các bảng con lồng bên trong VẪN ĐƯỢC CO GIÃN THOẢI MÁI!
+          if (hit.node.id === this.focusNodeId || !focusNode.findNode(hit.node.id)) {
+            return;
+          }
+        }
         this.selectedNodeId = hit.node.id;
         this.bringToFront(hit.node.id);
         this.updateHierarchyTree();
@@ -725,14 +1368,23 @@ class NestedCanvasApp {
       // TUYỆT ĐỐI KHÔNG VẼ VÀO THANH TIÊU ĐỀ, BẤM VÀO LÀ DI CHUYỂN CỬA SỔ
       if (hit && hit.action === 'titlebar') {
         const now = performance.now();
-        // Hỗ trợ nhấp đúp vào thanh tiêu đề để phóng to/thu nhỏ như Windows
+        // Hỗ trợ nhấp đúp vào thanh tiêu đề để bật/tắt Chế Độ Tập Trung
         if (this.lastTitlebarClickNodeId === hit.node.id && now - this.lastTitlebarClickTime < 320) {
-          this.focusBoardFullscreen(hit.node);
+          this.toggleFocusMode(hit.node);
           this.lastTitlebarClickTime = 0;
           return;
         }
         this.lastTitlebarClickTime = now;
         this.lastTitlebarClickNodeId = hit.node.id;
+
+        if (this.isFocusMode) {
+          const focusNode = this.scene.getNode(this.focusNodeId) || this.scene.root;
+          // Khóa kéo di chuyển cho chính bảng tập trung mẹ (để giữ cố định khung hình).
+          // Nhưng các bảng con bên trong VẪN ĐƯỢC KÉO DI CHUYỂN BÌNH THƯỜNG!
+          if (hit.node.id === this.focusNodeId || !focusNode.findNode(hit.node.id)) {
+            return;
+          }
+        }
 
         this.selectedNodeId = hit.node.id;
         this.bringToFront(hit.node.id);
@@ -749,7 +1401,17 @@ class NestedCanvasApp {
       // 4. CÔNG CỤ BÚT VẼ (PEN TOOL) - Gán chính xác vào node mục tiêu
       if (this.activeTool === 'pen') {
         let targetNode;
-        if (this.isSingleBoardMode) {
+        if (this.isFocusMode && this.focusNodeId) {
+          const focusNode = this.scene.getNode(this.focusNodeId) || this.scene.root;
+          // Nếu bấm/vẽ vào một bảng con bên trong bảng tập trung -> Vẽ trực tiếp lên bảng con đó!
+          if (hit && hit.action === 'body' && (hit.node.id === this.focusNodeId || focusNode.findNode(hit.node.id))) {
+            targetNode = hit.node;
+            this.selectedNodeId = hit.node.id;
+          } else {
+            targetNode = focusNode;
+            this.selectedNodeId = this.focusNodeId;
+          }
+        } else if (this.isSingleBoardMode) {
           const sharedRoot = this.scene.getNode(this.singleBoardId);
           if (hit && hit.node && (hit.node.id === this.singleBoardId || sharedRoot?.findNode(hit.node.id))) {
             targetNode = hit.node;
@@ -787,7 +1449,16 @@ class NestedCanvasApp {
       if (this.activeTool.startsWith('eraser')) {
         this.isErasing = true;
         let targetNode;
-        if (this.isSingleBoardMode) {
+        if (this.isFocusMode && this.focusNodeId) {
+          const focusNode = this.scene.getNode(this.focusNodeId) || this.scene.root;
+          if (hit && hit.action === 'body' && (hit.node.id === this.focusNodeId || focusNode.findNode(hit.node.id))) {
+            targetNode = hit.node;
+            this.selectedNodeId = hit.node.id;
+          } else {
+            targetNode = focusNode;
+            this.selectedNodeId = this.focusNodeId;
+          }
+        } else if (this.isSingleBoardMode) {
           const sharedRoot = this.scene.getNode(this.singleBoardId);
           if (hit && hit.node && (hit.node.id === this.singleBoardId || sharedRoot?.findNode(hit.node.id))) {
             targetNode = hit.node;
@@ -805,6 +1476,32 @@ class NestedCanvasApp {
 
       // 6. CÔNG CỤ CHỌN (SELECT TOOL)
       if (this.activeTool === 'select') {
+        if (this.isFocusMode) {
+          const focusNode = this.scene.getNode(this.focusNodeId) || this.scene.root;
+          if (hit && hit.node && hit.node.id !== this.focusNodeId && focusNode.findNode(hit.node.id)) {
+            // Đây là bảng con bên trong bảng tập trung -> Cho phép chọn, đưa lên trước và kéo di chuyển!
+            this.selectedNodeId = hit.node.id;
+            this.bringToFront(hit.node.id);
+            this.isDragging = true;
+            this.draggingNode = hit.node;
+            this.dragInitialScreenPos = screenPos.clone();
+            this.dragInitialTransform = hit.node.transform.clone();
+            this.canvas.style.cursor = 'grabbing';
+            this.updateHierarchyTree();
+            this.updateNodeProperties();
+            return;
+          } else if (hit && hit.node && hit.node.id === this.focusNodeId) {
+            this.selectedNodeId = this.focusNodeId;
+            this.updateHierarchyTree();
+            this.updateNodeProperties();
+            return;
+          } else {
+            this.isPanning = true;
+          }
+          this.updateHierarchyTree();
+          this.updateNodeProperties();
+          return;
+        }
         if (hit) {
           this.selectedNodeId = hit.node.id;
           this.bringToFront(hit.node.id);
@@ -1250,21 +1947,21 @@ class NestedCanvasApp {
       const isSelected = this.selectedNodeId === node.id;
       const handles = isSelected
         ? [
-            { name: 'nw', x: screenBounds.minX, y: screenBounds.minY },
-            { name: 'ne', x: screenBounds.maxX, y: screenBounds.minY },
-            { name: 'se', x: screenBounds.maxX, y: screenBounds.maxY },
-            { name: 'sw', x: screenBounds.minX, y: screenBounds.maxY },
-            { name: 'n', x: (screenBounds.minX + screenBounds.maxX) * 0.5, y: screenBounds.minY },
-            { name: 's', x: (screenBounds.minX + screenBounds.maxX) * 0.5, y: screenBounds.maxY },
-            { name: 'e', x: screenBounds.maxX, y: (screenBounds.minY + screenBounds.maxY) * 0.5 },
-            { name: 'w', x: screenBounds.minX, y: (screenBounds.minY + screenBounds.maxY) * 0.5 },
-          ]
+          { name: 'nw', x: screenBounds.minX, y: screenBounds.minY },
+          { name: 'ne', x: screenBounds.maxX, y: screenBounds.minY },
+          { name: 'se', x: screenBounds.maxX, y: screenBounds.maxY },
+          { name: 'sw', x: screenBounds.minX, y: screenBounds.maxY },
+          { name: 'n', x: (screenBounds.minX + screenBounds.maxX) * 0.5, y: screenBounds.minY },
+          { name: 's', x: (screenBounds.minX + screenBounds.maxX) * 0.5, y: screenBounds.maxY },
+          { name: 'e', x: screenBounds.maxX, y: (screenBounds.minY + screenBounds.maxY) * 0.5 },
+          { name: 'w', x: screenBounds.minX, y: (screenBounds.minY + screenBounds.maxY) * 0.5 },
+        ]
         : [
-            { name: 'se', x: screenBounds.maxX, y: screenBounds.maxY },
-            { name: 'sw', x: screenBounds.minX, y: screenBounds.maxY },
-            { name: 'ne', x: screenBounds.maxX, y: screenBounds.minY },
-            { name: 'nw', x: screenBounds.minX, y: screenBounds.minY },
-          ];
+          { name: 'se', x: screenBounds.maxX, y: screenBounds.maxY },
+          { name: 'sw', x: screenBounds.minX, y: screenBounds.maxY },
+          { name: 'ne', x: screenBounds.maxX, y: screenBounds.minY },
+          { name: 'nw', x: screenBounds.minX, y: screenBounds.minY },
+        ];
 
       for (const handle of handles) {
         if (Math.hypot(screenPos.x - handle.x, screenPos.y - handle.y) <= handleHitRadius) {
@@ -1363,53 +2060,135 @@ class NestedCanvasApp {
     return testNode(this.scene.root);
   }
 
-  focusBoardFullscreen(node) {
-    // Nếu bảng này đang được phóng to toàn màn hình, bấm lần nữa để thu nhỏ phục hồi góc nhìn cũ
-    if (this.savedFullscreenCamera && this.fullscreenTargetNodeId === node.id) {
-      this.camera.zoom = this.savedFullscreenCamera.zoom;
-      this.camera.pan = this.savedFullscreenCamera.pan.clone ? this.savedFullscreenCamera.pan.clone() : new Vec2(this.savedFullscreenCamera.pan.x, this.savedFullscreenCamera.pan.y);
-      this.savedFullscreenCamera = null;
-      this.fullscreenTargetNodeId = null;
-      this.updateZoomHUD();
-      this.broadcastCurrentCameraSync();
-      return;
+  enterFocusMode(node) {
+    if (!node || node.id === this.scene.root.id) return;
+    if (this.isFocusMode && this.focusNodeId === node.id) return;
+
+    if (!this.isFocusMode) {
+      this.savedPreFocusCamera = {
+        zoom: this.camera.zoom,
+        pan: this.camera.pan.clone ? this.camera.pan.clone() : new Vec2(this.camera.pan.x, this.camera.pan.y),
+      };
     }
 
-    this.savedFullscreenCamera = {
-      zoom: this.camera.zoom,
-      pan: this.camera.pan.clone ? this.camera.pan.clone() : new Vec2(this.camera.pan?.x || 0, this.camera.pan?.y || 0),
-    };
-    this.fullscreenTargetNodeId = node.id;
+    this.isFocusMode = true;
+    this.focusNodeId = node.id;
+    this.selectedNodeId = node.id;
+
+    // BẢO TOÀN BỐ CỤC BẢNG CHÍNH 100%:
+    // 1. Tuyệt đối KHÔNG gọi bringToFront để không xáo trộn mảng children và z-index của các bảng!
+    // 2. Tuyệt đối KHÔNG thay đổi node.transform (x, y, w, h) của bảng!
+    // 3. Mặc định KHÔNG gửi camera sync sang Màn Chiếu để Màn Chiếu PC giữ nguyên toàn cảnh các bảng!
 
     const isMobile = window.innerWidth <= 768 || this.isSingleBoardMode;
     const paddingX = isMobile ? 14 : 64;
-    const paddingTop = isMobile ? 60 : 64;
-    const paddingBottom = isMobile ? 96 : 64;
+    const paddingTop = isMobile ? 76 : 88;
+    const paddingBottom = isMobile ? 84 : 72;
 
     const availW = Math.max(160, window.innerWidth - paddingX * 2);
     const availH = Math.max(160, window.innerHeight - (paddingTop + paddingBottom));
 
     const worldTransform = this.scene.computeWorldTransform(node.id);
     const worldScale = Math.hypot(worldTransform.a, worldTransform.b) || 1.0;
-    const worldW = node.width * worldScale;
-    const worldH = node.height * worldScale;
+    const worldW = (node.width || 800) * worldScale;
+    const worldH = (node.height || 600) * worldScale;
 
     const zoomW = availW / worldW;
     const zoomH = availH / worldH;
     const targetZoom = Math.max(0.1, Math.min(8.0, Math.min(zoomW, zoomH)));
 
     const worldCenter = worldTransform.transformPoint(new Vec2(node.width * 0.5, node.height * 0.5));
-    const offsetYInWorld = isMobile ? ((paddingTop - paddingBottom) * 0.5) / targetZoom : 0;
+    const offsetYInWorld = ((paddingTop - paddingBottom) * 0.5) / targetZoom;
 
     this.camera.zoom = targetZoom;
     this.camera.pan = new Vec2(worldCenter.x, worldCenter.y - offsetYInWorld);
 
-    this.selectedNodeId = node.id;
-    this.bringToFront(node.id);
+    this.updateFocusModeUI();
     this.updateZoomHUD();
     this.updateHierarchyTree();
     this.updateNodeProperties();
-    this.broadcastCurrentCameraSync();
+
+    if (this.focusSyncDisplay) {
+      this.broadcastCurrentCameraSync();
+    }
+  }
+
+  exitFocusMode() {
+    if (!this.isFocusMode) return;
+
+    if (this.savedPreFocusCamera) {
+      this.camera.zoom = this.savedPreFocusCamera.zoom;
+      this.camera.pan = this.savedPreFocusCamera.pan.clone ? this.savedPreFocusCamera.pan.clone() : new Vec2(this.savedPreFocusCamera.pan.x, this.savedPreFocusCamera.pan.y);
+      this.savedPreFocusCamera = null;
+    }
+
+    this.isFocusMode = false;
+    this.focusNodeId = null;
+
+    this.updateFocusModeUI();
+    this.updateZoomHUD();
+    this.updateHierarchyTree();
+    this.updateNodeProperties();
+
+    // Khôi phục lại góc nhìn toàn cảnh của display nếu trước đó đang bật đồng bộ
+    if (this.focusSyncDisplay) {
+      this.broadcastCurrentCameraSync();
+    }
+  }
+
+  toggleFocusMode(node) {
+    if (!node || node.id === this.scene.root.id) return;
+    if (this.isFocusMode && this.focusNodeId === node.id) {
+      this.exitFocusMode();
+    } else {
+      this.enterFocusMode(node);
+    }
+  }
+
+  toggleFocusDisplaySync() {
+    this.focusSyncDisplay = !this.focusSyncDisplay;
+    this.updateFocusModeUI();
+    if (this.focusSyncDisplay) {
+      this.broadcastCurrentCameraSync();
+    } else if (this.savedPreFocusCamera && this.syncClient && this.syncClient.isConnected) {
+      this.syncClient.send('CANVAS_CAMERA_SYNC', {
+        zoom: this.savedPreFocusCamera.zoom,
+        pan: { x: this.savedPreFocusCamera.pan.x, y: this.savedPreFocusCamera.pan.y },
+        viewport: { w: window.innerWidth, h: window.innerHeight },
+      });
+    }
+  }
+
+  updateFocusModeUI() {
+    const focusBar = document.getElementById('focus-mode-bar');
+    const titleEl = document.getElementById('focus-mode-board-title');
+    const syncText = document.getElementById('focus-sync-text');
+    const syncBtn = document.getElementById('btn-focus-toggle-display');
+    const appContainer = document.getElementById('app');
+
+    if (this.isFocusMode && this.focusNodeId) {
+      const node = this.scene.getNode(this.focusNodeId);
+      if (focusBar) focusBar.style.display = 'flex';
+      if (titleEl) titleEl.textContent = `Bảng: ${node ? node.name : 'Bảng Con'}`;
+      if (appContainer) appContainer.classList.add('in-focus-mode');
+
+      if (syncBtn) {
+        if (this.focusSyncDisplay) {
+          syncBtn.classList.add('syncing');
+          if (syncText) syncText.textContent = 'Màn Chiếu: Đang Phóng To';
+        } else {
+          syncBtn.classList.remove('syncing');
+          if (syncText) syncText.textContent = 'Màn Chiếu: Giữ Toàn Cảnh';
+        }
+      }
+    } else {
+      if (focusBar) focusBar.style.display = 'none';
+      if (appContainer) appContainer.classList.remove('in-focus-mode');
+    }
+  }
+
+  focusBoardFullscreen(node) {
+    this.toggleFocusMode(node);
   }
 
   clearBoard(node) {
@@ -1527,7 +2306,13 @@ class NestedCanvasApp {
   }
 
   onKeyDown(e) {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+    if (e.key === 'Escape') {
+      if (this.isFocusMode) {
+        this.exitFocusMode();
+        e.preventDefault();
+        return;
+      }
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       if (e.shiftKey) {
         this.redo();
       } else {
@@ -1549,8 +2334,16 @@ class NestedCanvasApp {
       this.setTool(e.shiftKey ? 'eraser-segment' : 'eraser-object');
     } else if (e.key.toLowerCase() === 'm') {
       this.toggleMultiPointMode();
-    } else if (e.key.toLowerCase() === 'f') {
-      this.fitAllContent();
+    } else if (e.key.toLowerCase() === 'f' && !e.ctrlKey && !e.metaKey && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+      if (this.isFocusMode) {
+        this.exitFocusMode();
+      } else if (this.selectedNodeId && this.selectedNodeId !== this.scene.root.id) {
+        const node = this.scene.getNode(this.selectedNodeId);
+        if (node) this.toggleFocusMode(node);
+      } else {
+        this.fitAllContent();
+      }
+      e.preventDefault();
     } else if (e.key === '0') {
       this.fitAllContent();
     }
@@ -1819,11 +2612,20 @@ class NestedCanvasApp {
           <span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${isSub ? `↳ ${boardIcon}` : boardIcon} ${node.name}</span>
         </div>
         <div style="display:flex; align-items:center; gap:4px;">
+          <button class="btn-tree-focus" title="${this.isFocusMode && this.focusNodeId === node.id ? 'Đang ở Chế Độ Tập Trung (Bấm để thoát)' : 'Chế Độ Tập Trung (F)'}" style="background:${this.isFocusMode && this.focusNodeId === node.id ? 'rgba(188,140,255,0.25)' : 'none'}; border:${this.isFocusMode && this.focusNodeId === node.id ? '1px solid #bc8cff' : 'none'}; color:#d2a8ff; cursor:pointer; font-size:11px; padding:1px 4px; border-radius:4px;">🎯</button>
           <button class="btn-tree-add-sub" title="Thêm bảng con lồng bên trong" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:11px; padding:1px 3px; border-radius:3px;">+📋</button>
           <button class="btn-tree-add-graph" title="Thêm đồ thị con lồng bên trong" style="background:none; border:none; color:#3fb950; cursor:pointer; font-size:11px; padding:1px 3px; border-radius:3px;">+📈</button>
           <span style="font-size:10px; opacity:0.6">${node.elements.length} nét</span>
         </div>
       `;
+
+      const focusTreeBtn = item.querySelector('.btn-tree-focus');
+      if (focusTreeBtn) {
+        focusTreeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.toggleFocusMode(node);
+        });
+      }
 
       const shareBtn = item.querySelector('.btn-tree-share');
       if (shareBtn) {
@@ -1852,7 +2654,9 @@ class NestedCanvasApp {
 
       item.addEventListener('click', () => {
         this.selectedNodeId = node.id;
-        this.bringToFront(node.id);
+        if (!this.isFocusMode) {
+          this.bringToFront(node.id);
+        }
         this.updateHierarchyTree();
         this.updateNodeProperties();
       });
@@ -1878,6 +2682,22 @@ class NestedCanvasApp {
     const activeBadge = document.getElementById('stat-active-board');
     if (activeBadge) {
       activeBadge.textContent = activeNode ? `Đang chọn: ${activeNode.name.split(':')[0]}` : 'Chưa chọn bảng';
+    }
+
+    const topFocusBtn = document.getElementById('btn-top-focus');
+    if (topFocusBtn) {
+      const canFocus = activeNode && activeNode.id !== this.scene.root.id;
+      topFocusBtn.style.display = canFocus ? 'inline-flex' : 'none';
+      if (canFocus) {
+        topFocusBtn.innerHTML = `
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="9" />
+            <circle cx="12" cy="12" r="4" />
+            <circle cx="12" cy="12" r="1" fill="currentColor" />
+          </svg>
+          ${(this.isFocusMode && this.focusNodeId === activeNode.id) ? 'Thoát Tập Trung ✕' : '🎯 Tập Trung'}
+        `;
+      }
     }
 
     const totalStrokes = this.countTotalStrokes(this.scene.root);
@@ -2101,12 +2921,23 @@ class NestedCanvasApp {
             📡 ${node.isShared ? 'Cài Đặt & Xem Mã QR' : 'Bật Chia Sẻ Bảng Này'}
           </button>
         </div>
+
+        <!-- Chế Độ Tập Trung (Bảo toàn bố cục bảng chính) -->
+        <button id="btn-prop-focus-mode" class="btn-action" style="width:100%; margin-top:8px; padding:6px 10px; font-size:11px; justify-content:center; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d2a8ff; border-color:rgba(188,140,255,0.4); background:rgba(188,140,255,0.12); font-weight:600;">
+          🎯 ${this.isFocusMode && this.focusNodeId === node.id ? 'Thoát Chế Độ Tập Trung (Esc)' : 'Chế Độ Tập Trung (Bảo Toàn Bố Cục)'}
+        </button>
     `;
 
     html += `</div>`;
     propPanel.innerHTML = html;
 
     // Event listeners
+    const propFocusBtn = document.getElementById('btn-prop-focus-mode');
+    if (propFocusBtn) {
+      propFocusBtn.addEventListener('click', () => {
+        this.toggleFocusMode(node);
+      });
+    }
     document.getElementById('prop-name').addEventListener('input', (e) => {
       node.name = e.target.value;
       this.updateHierarchyTree();
@@ -3225,11 +4056,27 @@ class NestedCanvasApp {
           pillHost.style.background = connected ? 'rgba(63,185,80,0.15)' : 'rgba(248,81,73,0.15)';
         }
       },
+      onDiscovered: (ip, data) => {
+        const inputServerHost = document.getElementById('input-server-host');
+        if (inputServerHost) inputServerHost.value = ip;
+        const scanStatus = document.getElementById('lan-scan-status-text');
+        if (scanStatus) {
+          scanStatus.style.display = 'block';
+          scanStatus.style.color = '#3fb950';
+          scanStatus.textContent = `🎉 Đã tìm thấy PC (${ip})!`;
+        }
+        this.showToast(`🎉 Đã tự động phát hiện PC tại ${ip}!`, 3500);
+      },
     });
 
     // Kết nối cấu hình Máy chủ Backend (cho APK / điện thoại)
     const inputServerHost = document.getElementById('input-server-host');
     const btnSaveServerHost = document.getElementById('btn-save-server-host');
+    const btnAutoDiscoverLan = document.getElementById('btn-auto-discover-lan');
+    const lanScanStatus = document.getElementById('lan-scan-status-text');
+    const lanScanIcon = document.getElementById('lan-scan-icon');
+    const lanScanBtnLabel = document.getElementById('lan-scan-btn-label');
+
     if (inputServerHost) {
       inputServerHost.value = this.syncClient.getHost();
     }
@@ -3247,7 +4094,77 @@ class NestedCanvasApp {
       });
     }
 
+    if (btnAutoDiscoverLan) {
+      btnAutoDiscoverLan.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (btnAutoDiscoverLan.disabled) return;
+        btnAutoDiscoverLan.disabled = true;
+        if (lanScanIcon) lanScanIcon.textContent = '⏳';
+        if (lanScanBtnLabel) lanScanBtnLabel.textContent = 'Đang quét mạng Wi-Fi...';
+        if (lanScanStatus) {
+          lanScanStatus.style.display = 'block';
+          lanScanStatus.style.color = '#58a6ff';
+          lanScanStatus.textContent = '🔍 Đang dò quét tìm máy tính PC trong cùng mạng Wi-Fi...';
+        }
+
+        try {
+          const res = await this.syncClient.discoverServer({
+            timeoutMs: 500,
+            onProgress: ({ scanned, total, currentIp }) => {
+              if (lanScanStatus) {
+                lanScanStatus.textContent = `🔍 Đang dò: ${currentIp} (${scanned}/${total})`;
+              }
+            }
+          });
+
+          if (res.success) {
+            if (inputServerHost) inputServerHost.value = res.ip;
+            if (lanScanIcon) lanScanIcon.textContent = '✅';
+            if (lanScanBtnLabel) lanScanBtnLabel.textContent = `Đã tìm thấy: ${res.ip}`;
+            if (lanScanStatus) {
+              lanScanStatus.style.color = '#3fb950';
+              lanScanStatus.textContent = `🎉 Tìm thấy máy chủ PC: ${res.ip} (Port ${res.data?.port || 8765}). Đang đồng bộ!`;
+            }
+            this.showToast(`🎉 Đã tìm thấy PC (${res.ip}) và kết nối thành công!`, 4000);
+          } else {
+            if (lanScanIcon) lanScanIcon.textContent = '❌';
+            if (lanScanBtnLabel) lanScanBtnLabel.textContent = 'Quét lại';
+            if (lanScanStatus) {
+              lanScanStatus.style.color = '#f85149';
+              lanScanStatus.textContent = '⚠️ Không tìm thấy PC. Hãy kiểm tra điện thoại và PC đã kết nối cùng mạng Wi-Fi chưa.';
+            }
+            this.showToast('⚠️ Không tìm thấy PC trong mạng Wi-Fi này.', 4000);
+          }
+        } catch (err) {
+          console.error('[Auto-Discover] Error:', err);
+        } finally {
+          btnAutoDiscoverLan.disabled = false;
+          setTimeout(() => {
+            if (lanScanIcon) lanScanIcon.textContent = '🔍';
+            if (lanScanBtnLabel) lanScanBtnLabel.textContent = 'Tự Động Quét Tìm PC (Auto-Discovery)';
+          }, 4000);
+        }
+      });
+    }
+
     this.syncClient.connect();
+
+    // Tự động quét tìm PC khi mở app trên Capacitor / Mobile nếu chưa kết nối được
+    const isCapacitor = !!(window.Capacitor?.isNativePlatform() || window.location.protocol === 'capacitor:' || (window.location.hostname === 'localhost' && (!window.location.port || window.location.port === '')));
+    if (isCapacitor) {
+      setTimeout(() => {
+        if (!this.syncClient.isConnected) {
+          console.log('[App] Auto-triggering first-time discovery for mobile app...');
+          this.syncClient.discoverServer({
+            timeoutMs: 500,
+            onFound: (ip, data) => {
+              if (inputServerHost) inputServerHost.value = ip;
+              this.showToast(`🎉 Đã tự động kết nối PC (${ip})!`, 3500);
+            }
+          });
+        }
+      }, 1500);
+    }
 
     // Thiết lập Giao diện Mobile Single Board nếu người dùng truy cập ?board=...
     if (this.isSingleBoardMode && this.singleBoardId) {
@@ -3960,10 +4877,15 @@ class NestedCanvasApp {
 
   broadcastCanvasCamera() {
     if (!this.syncClient || !this.syncClient.isConnected) return;
+    if (this.isFocusMode && !this.focusSyncDisplay) {
+      // Trong Chế Độ Tập Trung: Mặc định không gửi camera sync sang PC Display để bảo toàn bố cục toàn cảnh
+      return;
+    }
     if (this._canvasCameraThrottler) return;
     this._canvasCameraThrottler = requestAnimationFrame(() => {
       this._canvasCameraThrottler = null;
       if (!this.syncClient || !this.syncClient.isConnected) return;
+      if (this.isFocusMode && !this.focusSyncDisplay) return;
       this.syncClient.send('CANVAS_CAMERA_SYNC', {
         zoom: this.camera.zoom,
         pan: { x: this.camera.pan.x, y: this.camera.pan.y },
@@ -4061,6 +4983,7 @@ class NestedCanvasApp {
   broadcastCurrentCameraSync() {
     this.saveState();
     this.broadcastCanvasCamera();
+    if (this.isFocusMode && !this.focusSyncDisplay) return;
     if (!this.syncClient || !this.syncClient.currentCastBoardId) return;
     const boardId = this.syncClient.currentCastBoardId;
     const node = this.scene.getNode(boardId);
@@ -4388,7 +5311,10 @@ class NestedCanvasApp {
         this.eraserCursor,
         this.ocrSelectionBox,
         this.ocrHighlightBoxes,
-        this.remoteActiveSessions
+        this.remoteActiveSessions,
+        {
+          focusedNodeId: this.isFocusMode ? this.focusNodeId : null,
+        }
       );
 
       this.updateOcrPillPosition();

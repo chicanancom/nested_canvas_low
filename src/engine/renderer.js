@@ -145,6 +145,49 @@ export class CanvasRenderer {
     if (options && typeof options.isDisplayMode === 'boolean') {
       this.isDisplayMode = options.isDisplayMode;
     }
+    const focusedNodeId = options?.focusedNodeId || null;
+
+    // Phân tích nhánh tập trung (Focused branch analysis):
+    // Đảm bảo bảng được chọn, toàn bộ cây con bên trong (cấp 2, 3, 4...) và các bảng cha chứa nó
+    // LUÔN hiển thị 100% sắc nét, tuyệt đối không bị làm mờ hay giảm opacity!
+    let focusedSubtreeIds = null;
+    let focusedAncestorIds = null;
+
+    if (focusedNodeId && !this.isDisplayMode) {
+      focusedSubtreeIds = new Set();
+      focusedAncestorIds = new Set();
+
+      const findPath = (curr, path = []) => {
+        if (!curr) return false;
+        const currentPath = [...path, curr.id];
+        if (curr.id === focusedNodeId) {
+          path.forEach((id) => focusedAncestorIds.add(id));
+          const addAll = (n) => {
+            focusedSubtreeIds.add(n.id);
+            if (Array.isArray(n.children)) {
+              for (const c of n.children) addAll(c);
+            }
+          };
+          addAll(curr);
+          return true;
+        }
+        if (Array.isArray(curr.children)) {
+          for (const c of curr.children) {
+            if (findPath(c, currentPath)) return true;
+          }
+        }
+        return false;
+      };
+
+      findPath(scene.root);
+    }
+
+    const focusedContext = {
+      focusedNodeId,
+      focusedSubtreeIds,
+      focusedAncestorIds,
+    };
+
     const ctx = this.ctx;
     const dpr = window.devicePixelRatio || 1;
 
@@ -188,7 +231,8 @@ export class CanvasRenderer {
       true,
       selectedNodeId,
       activeSession,
-      remoteSessions
+      remoteSessions,
+      focusedContext
     );
 
     // 4. Draw Eraser Brush Ring Indicator
@@ -365,7 +409,8 @@ export class CanvasRenderer {
     isRoot,
     selectedNodeId,
     activeSession,
-    remoteSessions = null
+    remoteSessions = null,
+    focusedContext = null
   ) {
     // nodeScreenTransform = parentScreenTransform * node.transform
     const nodeScreenTransform = isRoot
@@ -376,6 +421,18 @@ export class CanvasRenderer {
     const localBounds = node.localBounds();
     const nodeScreenBounds = localBounds.transform(nodeScreenTransform);
 
+    const isFocusActive = !!(focusedContext && focusedContext.focusedNodeId && !this.isDisplayMode);
+    const isFocused = !isRoot && isFocusActive && node.id === focusedContext.focusedNodeId;
+    const isInFocusedBranch = !isFocusActive || isRoot ||
+      (focusedContext.focusedSubtreeIds && focusedContext.focusedSubtreeIds.has(node.id)) ||
+      (focusedContext.focusedAncestorIds && focusedContext.focusedAncestorIds.has(node.id));
+
+    // Chỉ làm mờ các bảng hoàn toàn nằm ngoài nhánh tập trung.
+    // Các bảng con cấp 2, cấp 3, cấp 4... bên trong bảng tập trung và các bảng cha chứa nó
+    // TUYỆT ĐỐI KHÔNG bị làm mờ, luôn hiển thị 100% sắc nét!
+    const isDimmed = isFocusActive && !isRoot && !isInFocusedBranch;
+    let dimmedSaved = false;
+
     if (!isRoot) {
       const isVisible = currentScissor.intersects(nodeScreenBounds);
       if (!isVisible) {
@@ -384,8 +441,14 @@ export class CanvasRenderer {
       }
       this.stats.renderedNodes++;
 
+      if (isDimmed && ctx.globalAlpha > 0.3) {
+        ctx.save();
+        ctx.globalAlpha = 0.2;
+        dimmedSaved = true;
+      }
+
       // Draw Child Board (Bảng Con) Container Background & Frame
-      this.drawCanvasContainer(ctx, node, nodeScreenBounds, node.id === selectedNodeId, camera.zoom);
+      this.drawCanvasContainer(ctx, node, nodeScreenBounds, node.id === selectedNodeId, camera.zoom, isFocused);
     } else {
       this.stats.renderedNodes++;
     }
@@ -499,11 +562,15 @@ export class CanvasRenderer {
         false,
         selectedNodeId,
         activeSession,
-        remoteSessions
+        remoteSessions,
+        focusedContext
       );
     }
 
     ctx.restore();
+    if (dimmedSaved) {
+      ctx.restore();
+    }
   }
 
   drawNodeTextContent(ctx, node, innerContentScreenTransform) {
@@ -546,17 +613,23 @@ export class CanvasRenderer {
     ctx.restore();
   }
 
-  drawCanvasContainer(ctx, node, screenBounds, isSelected, zoom) {
+  drawCanvasContainer(ctx, node, screenBounds, isSelected, zoom, isFocused = false) {
     const { minX, minY, width, height } = screenBounds;
     const radius = 8;
     const theme = BOARD_THEMES[node.style] || BOARD_THEMES.chalkboard;
     const headerH = Math.max(24, Math.min(32, 28 * Math.min(zoom, 1.2)));
 
-    // 1. Elevation Drop Shadow
+    // 1. Elevation Drop Shadow & Focus Glow Ring
     ctx.save();
-    ctx.shadowColor = isSelected ? 'rgba(88, 166, 255, 0.35)' : 'rgba(0, 0, 0, 0.45)';
-    ctx.shadowBlur = (isSelected ? 28 : 16) * Math.min(zoom, 1.5);
-    ctx.shadowOffsetY = 6 * Math.min(zoom, 1.5);
+    if (isFocused) {
+      ctx.shadowColor = 'rgba(188, 140, 255, 0.65)';
+      ctx.shadowBlur = 32 * Math.min(zoom, 1.5);
+      ctx.shadowOffsetY = 4 * Math.min(zoom, 1.5);
+    } else {
+      ctx.shadowColor = isSelected ? 'rgba(88, 166, 255, 0.35)' : 'rgba(0, 0, 0, 0.45)';
+      ctx.shadowBlur = (isSelected ? 28 : 16) * Math.min(zoom, 1.5);
+      ctx.shadowOffsetY = 6 * Math.min(zoom, 1.5);
+    }
 
     // Board Base Background
     ctx.fillStyle = theme.bg;
@@ -565,15 +638,26 @@ export class CanvasRenderer {
     ctx.fill();
     ctx.restore();
 
+    // Focus Mode Highlight Ring on Container
+    if (isFocused) {
+      ctx.save();
+      ctx.strokeStyle = '#bc8cff';
+      ctx.lineWidth = Math.max(2.5, 3 * Math.min(zoom, 1.5));
+      ctx.beginPath();
+      ctx.roundRect(minX, minY, width, height, radius);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // 2. Clean Header Bar
-    ctx.fillStyle = isSelected ? theme.headerActiveBg : theme.headerBg;
+    ctx.fillStyle = isFocused ? 'rgba(188, 140, 255, 0.25)' : (isSelected ? theme.headerActiveBg : theme.headerBg);
     ctx.beginPath();
     ctx.roundRect(minX, minY, width, headerH, [radius, radius, 0, 0]);
     ctx.fill();
 
     // Header divider line
-    ctx.strokeStyle = isSelected ? 'rgba(88, 166, 255, 0.4)' : theme.border;
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = isFocused ? '#bc8cff' : (isSelected ? 'rgba(88, 166, 255, 0.4)' : theme.border);
+    ctx.lineWidth = isFocused ? 1.5 : 1;
     ctx.beginPath();
     ctx.moveTo(minX, minY + headerH);
     ctx.lineTo(minX + width, minY + headerH);
@@ -585,7 +669,7 @@ export class CanvasRenderer {
 
       // Active indicator dot (chỉ hiện trên App)
       if (!this.isDisplayMode && width > 60) {
-        ctx.fillStyle = isSelected ? '#58a6ff' : theme.border;
+        ctx.fillStyle = isFocused ? '#bc8cff' : (isSelected ? '#58a6ff' : theme.border);
         ctx.beginPath();
         ctx.arc(minX + 12, centerY, 3.5, 0, Math.PI * 2);
         ctx.fill();
@@ -593,12 +677,12 @@ export class CanvasRenderer {
 
       // Title Text: Trên màn chiếu CHỈ hiển thị tên bảng tinh gọn, không kèm số kích thước
       if (width > (this.isDisplayMode ? 20 : 120)) {
-        ctx.fillStyle = isSelected ? '#ffffff' : theme.text;
-        ctx.font = `${isSelected ? '600' : '500'} ${Math.max(11, Math.min(14, 12 * zoom))}px "Outfit", sans-serif`;
+        ctx.fillStyle = isFocused ? '#ffffff' : (isSelected ? '#ffffff' : theme.text);
+        ctx.font = `${isFocused || isSelected ? '600' : '500'} ${Math.max(11, Math.min(14, 12 * zoom))}px "Outfit", sans-serif`;
         ctx.textBaseline = 'middle';
         const startX = this.isDisplayMode ? minX + 14 : minX + 22;
         const maxTitleW = this.isDisplayMode ? Math.max(20, width - 28) : Math.max(40, width - 180);
-        const rawTitle = this.isDisplayMode ? (node.name || 'Bảng') : `${node.name} (${Math.round(node.width)}×${Math.round(node.height)})`;
+        const rawTitle = this.isDisplayMode ? (node.name || 'Bảng') : (isFocused ? `🎯 [Tập Trung] ${node.name}` : `${node.name} (${Math.round(node.width)}×${Math.round(node.height)})`);
         ctx.fillText(rawTitle, startX, centerY, maxTitleW);
       }
 
@@ -619,30 +703,42 @@ export class CanvasRenderer {
       ctx.lineTo(btnDelX - 2.5, centerY + 2.5);
       ctx.stroke();
 
-      // 5. Nút Phóng to toàn màn hình (Fullscreen ⛶)
+      // 5. Nút Chế Độ Tập Trung / Phóng To (Focus Mode 🎯 / ⛶)
       if (width >= 56) {
         const btnMaxX = minX + width - 34;
-        ctx.fillStyle = isSelected ? 'rgba(88, 166, 255, 0.18)' : 'rgba(255, 255, 255, 0.06)';
+        ctx.fillStyle = isFocused ? 'rgba(188, 140, 255, 0.35)' : (isSelected ? 'rgba(88, 166, 255, 0.18)' : 'rgba(255, 255, 255, 0.06)');
         ctx.beginPath();
         ctx.roundRect(btnMaxX - 8, centerY - 8, 16, 16, 4);
         ctx.fill();
-        ctx.strokeStyle = isSelected ? '#58a6ff' : '#94a3b8';
+        ctx.strokeStyle = isFocused ? '#d2a8ff' : (isSelected ? '#58a6ff' : '#94a3b8');
         ctx.lineWidth = 1.3;
-        const s = 3;
-        ctx.beginPath();
-        ctx.moveTo(btnMaxX - s, centerY - s + 2);
-        ctx.lineTo(btnMaxX - s, centerY - s);
-        ctx.lineTo(btnMaxX - s + 2, centerY - s);
-        ctx.moveTo(btnMaxX + s, centerY - s + 2);
-        ctx.lineTo(btnMaxX + s, centerY - s);
-        ctx.lineTo(btnMaxX + s - 2, centerY - s);
-        ctx.moveTo(btnMaxX - s, centerY + s - 2);
-        ctx.lineTo(btnMaxX - s, centerY + s);
-        ctx.lineTo(btnMaxX - s + 2, centerY + s);
-        ctx.moveTo(btnMaxX + s, centerY + s - 2);
-        ctx.lineTo(btnMaxX + s, centerY + s);
-        ctx.lineTo(btnMaxX + s - 2, centerY + s);
-        ctx.stroke();
+        if (isFocused) {
+          // Icon Target Bullseye 🎯
+          ctx.beginPath();
+          ctx.arc(btnMaxX, centerY, 3.5, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(btnMaxX, centerY, 1.2, 0, Math.PI * 2);
+          ctx.fillStyle = '#d2a8ff';
+          ctx.fill();
+        } else {
+          // Icon Focus Maximize ⛶
+          const s = 3;
+          ctx.beginPath();
+          ctx.moveTo(btnMaxX - s, centerY - s + 2);
+          ctx.lineTo(btnMaxX - s, centerY - s);
+          ctx.lineTo(btnMaxX - s + 2, centerY - s);
+          ctx.moveTo(btnMaxX + s, centerY - s + 2);
+          ctx.lineTo(btnMaxX + s, centerY - s);
+          ctx.lineTo(btnMaxX + s - 2, centerY - s);
+          ctx.moveTo(btnMaxX - s, centerY + s - 2);
+          ctx.lineTo(btnMaxX - s, centerY + s);
+          ctx.lineTo(btnMaxX - s + 2, centerY + s);
+          ctx.moveTo(btnMaxX + s, centerY + s - 2);
+          ctx.lineTo(btnMaxX + s, centerY + s);
+          ctx.lineTo(btnMaxX + s - 2, centerY + s);
+          ctx.stroke();
+        }
       }
 
       // 4. Nút Xóa sạch nét bảng (Clear Strokes 🗑️)

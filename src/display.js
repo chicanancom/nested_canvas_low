@@ -125,6 +125,11 @@ class PCDisplayApp {
       this.applyCanvasStyle(data);
     });
 
+    // Nhận thông báo chuyển phiên từ thiết bị điều khiển
+    this.syncClient.on('SESSION_SWITCH', () => {
+      this.syncClient.send('GET_CANVAS_MIRROR', {});
+    });
+
     // Tương thích ngược: Khi có thiết bị gửi lệnh CAST_BOARD cũ
     this.syncClient.on('CAST_BOARD', (data) => {
       if (data && data.scene) {

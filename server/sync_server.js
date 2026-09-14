@@ -16,6 +16,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const STATE_FILE = path.join(__dirname, 'data', 'sync_state.json');
 
+import dgram from 'dgram';
+
 export function getLocalIp() {
   const ifaces = os.networkInterfaces();
   for (const name of Object.keys(ifaces)) {
@@ -99,14 +101,55 @@ export function startSyncServer(port = 8765) {
   loadPersistedState();
 
   const server = http.createServer((req, res) => {
+    // CORS Headers for LAN auto-discovery from WebViews & external clients
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
     if (req.url === '/health') {
+      const localIp = getLocalIp();
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', sharedBoardsCount: sharedBoards.size }));
+      res.end(JSON.stringify({
+        status: 'ok',
+        app: 'nestedcanvas',
+        server: 'NestedCanvas Sync Server',
+        ip: localIp,
+        port: port,
+        sharedBoardsCount: sharedBoards.size,
+      }));
       return;
     }
     res.writeHead(404);
     res.end();
   });
+
+  // Start UDP broadcast beacon for auto-discovery (Port 8766)
+  try {
+    const udpSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    udpSocket.bind(0, () => {
+      try {
+        udpSocket.setBroadcast(true);
+        setInterval(() => {
+          try {
+            const beacon = Buffer.from(JSON.stringify({
+              app: 'nestedcanvas',
+              ip: getLocalIp(),
+              port: port,
+              time: Date.now(),
+            }));
+            udpSocket.send(beacon, 0, beacon.length, 8766, '255.255.255.255');
+          } catch (err) {}
+        }, 3000);
+      } catch (err) {}
+    });
+    udpSocket.on('error', () => {});
+  } catch (err) {}
 
   const wss = new WebSocketServer({ server });
 
@@ -229,6 +272,27 @@ export function startSyncServer(port = 8765) {
 
       const { type } = data;
       if (!type) return;
+
+      // 0. Smart Session Backup & Switch Protocol
+      if (type === 'SESSION_BACKUP') {
+        const { sessionId, meta, content } = data;
+        if (sessionId) {
+          try {
+            const sessionsDir = path.join(__dirname, 'data', 'sessions');
+            fs.mkdirSync(sessionsDir, { recursive: true });
+            const filePath = path.join(sessionsDir, `${sessionId}.json`);
+            fs.writeFileSync(filePath, JSON.stringify({ meta, content, savedAt: Date.now() }, null, 2), 'utf8');
+          } catch (e) {
+            console.warn('[SyncServer] Error writing session backup:', e.message);
+          }
+        }
+        return;
+      }
+
+      if (type === 'SESSION_SWITCH') {
+        broadcastToAll(JSON.stringify(data), ws);
+        return;
+      }
 
       // 0. Full Canvas Mirror Protocol for PC Display
       if (type === 'CANVAS_MIRROR') {

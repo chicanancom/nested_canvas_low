@@ -158,4 +158,9 @@ export class HistoryManager {
   canRedo() {
     return this.redoStack.length > 0;
   }
+
+  clear() {
+    this.undoStack = [];
+    this.redoStack = [];
+  }
 }

@@ -1183,6 +1183,653 @@ canvas {
   color: #ff7b72;
 }
 
+/* ==========================================================================
+   FOCUS MODE (CHẾ ĐỘ TẬP TRUNG - BẢO TOÀN BỐ CỤC BẢNG CHÍNH)
+   ========================================================================== */
+
+/* Ẩn top-bar khi đang ở chế độ tập trung để tạo không gian thoáng đãng */
+#app.in-focus-mode .top-bar {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -20px);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.focus-mode-bar {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 16px;
+  z-index: 95;
+  background: rgba(13, 17, 23, 0.88);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1.5px solid rgba(188, 140, 255, 0.45);
+  box-shadow: 0 8px 32px rgba(188, 140, 255, 0.22), 0 4px 14px rgba(0, 0, 0, 0.6);
+  border-radius: var(--radius-full);
+  animation: focusBarSlideDown 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes focusBarSlideDown {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -24px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+.focus-mode-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.focus-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: linear-gradient(135deg, rgba(188, 140, 255, 0.28), rgba(88, 166, 255, 0.28));
+  border: 1px solid rgba(188, 140, 255, 0.55);
+  color: #d2a8ff;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.focus-mode-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffffff;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-mode-center {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.focus-mode-hint {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.focus-mode-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-focus-sync {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--radius-full);
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #c9d1d9;
+}
+
+.btn-focus-sync:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.btn-focus-sync.syncing {
+  border-color: rgba(63, 185, 80, 0.6);
+  color: #3fb950;
+  background: rgba(63, 185, 80, 0.15);
+}
+
+.focus-sync-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #8b949e;
+  transition: all 0.2s;
+}
+
+.btn-focus-sync.syncing .focus-sync-dot {
+  background: #3fb950;
+  box-shadow: 0 0 8px #3fb950;
+}
+
+.btn-focus-exit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--radius-full);
+  padding: 6px 14px;
+  background: linear-gradient(135deg, #f85149, #da3633);
+  color: #ffffff;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(248, 81, 73, 0.35);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.btn-focus-exit:hover {
+  transform: scale(1.03);
+  box-shadow: 0 4px 14px rgba(248, 81, 73, 0.55);
+}
+
+@media (max-width: 768px) {
+  .focus-mode-bar {
+    top: 8px;
+    width: calc(100% - 16px);
+    height: auto;
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    gap: 8px;
+  }
+  .focus-mode-center {
+    display: none;
+  }
+  .focus-mode-title {
+    max-width: 140px;
+  }
+}
+
+/* ==========================================================================
+   Smart Session Management System Styles
+   ========================================================================== */
+.session-card {
+  display: flex;
+  flex-direction: column;
+  background: rgba(22, 27, 34, 0.85);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+}
+
+.session-card:hover {
+  border-color: rgba(88, 166, 255, 0.5);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.session-card.active {
+  border-color: #58a6ff;
+  background: rgba(88, 166, 255, 0.08);
+  box-shadow: 0 0 0 1px #58a6ff, 0 8px 25px rgba(88, 166, 255, 0.2);
+}
+
+.session-card-thumb-wrap {
+  width: 100%;
+  height: 110px;
+  background: #090d13;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.session-card-thumb {
+  width: 100%;
+  height: 110px;
+  object-fit: contain;
+  background: #090d13;
+  transition: transform 0.25s ease;
+}
+
+.session-card:hover .session-card-thumb {
+  transform: scale(1.03);
+}
+
+.session-card-badge-active {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(63, 185, 80, 0.9);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.session-card-body {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+
+.session-card-title {
+  font-weight: 700;
+  font-size: 13.5px;
+  color: #f0f6fc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.session-card-title:hover {
+  color: #58a6ff;
+}
+
+.session-card-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: #8b949e;
+}
+
+.session-card-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  gap: 4px;
+}
+
+.session-btn-open {
+  flex: 1;
+  padding: 5px 8px;
+  background: rgba(88, 166, 255, 0.15);
+  color: #58a6ff;
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transition: all 0.15s;
+}
+
+.session-btn-open:hover {
+  background: #58a6ff;
+  color: #ffffff;
+}
+
+.session-btn-icon {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  color: #c9d1d9;
+  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.15s;
+}
+
+.session-btn-icon:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+.session-btn-icon.danger:hover {
+  background: rgba(248, 81, 73, 0.2);
+  border-color: #f85149;
+  color: #f85149;
+}
+
+/* ==========================================================================
+ * TỰ ĐỘNG CĂN CHỈNH GIAO DIỆN CHO ĐIỆN THOẠI & THIẾT BỊ DI ĐỘNG (RESPONSIVE MOBILE UI)
+ * ========================================================================== */
+
+.mobile-only {
+  display: none !important;
+}
+
+@media (max-width: 768px) {
+  .desktop-only {
+    display: none !important;
+  }
+  .mobile-only {
+    display: flex !important;
+  }
+
+  /* 1. TOP BAR CĂN CHỈNH CHO ĐIỆN THOẠI */
+  .top-bar {
+    top: max(6px, env(safe-area-inset-top));
+    left: 6px;
+    right: 6px;
+    transform: none;
+    width: auto;
+    max-width: calc(100vw - 12px);
+    height: 42px;
+    padding: 0 8px;
+    gap: 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap;
+    border-radius: 12px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  }
+  .top-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .brand {
+    gap: 0;
+    flex-shrink: 0;
+  }
+  .brand span {
+    display: none !important;
+  }
+  .brand-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+  }
+
+  #btn-open-sessions {
+    padding: 4px 8px !important;
+    height: 30px !important;
+    gap: 4px !important;
+    margin-left: 2px !important;
+    flex-shrink: 0;
+  }
+  #label-active-session-name {
+    max-width: 75px !important;
+    font-size: 11px !important;
+  }
+
+  .divider {
+    height: 16px;
+    margin: 0 1px;
+    flex-shrink: 0;
+  }
+
+  /* History buttons */
+  #btn-undo, #btn-redo {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    flex-shrink: 0;
+  }
+  #btn-undo svg, #btn-redo svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  /* Top bar action buttons: icon-only on mobile */
+  .top-bar .btn-action {
+    height: 30px;
+    padding: 0 7px;
+    font-size: 11px;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .top-bar .btn-action svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  /* Ẩn bớt telemetry rườm rà trên điện thoại */
+  .stats-badge {
+    display: none !important;
+  }
+
+  #btn-lan-sync {
+    padding: 0 6px !important;
+    height: 30px !important;
+  }
+  #label-lan-presence {
+    display: none !important;
+  }
+
+  #btn-cast-pc {
+    padding: 0 6px !important;
+    height: 30px !important;
+  }
+  #label-cast-pc {
+    font-size: 11px !important;
+  }
+
+  #btn-theme-dropdown {
+    padding: 0 6px !important;
+    height: 30px !important;
+  }
+  #label-current-theme {
+    display: none !important;
+  }
+
+  /* 2. LEFT TOOLBAR THU NHỎ TRÊN ĐIỆN THOẠI */
+  .left-toolbar {
+    left: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    padding: 4px 3px;
+    gap: 3px;
+    border-radius: 12px;
+    max-height: calc(100dvh - 106px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  }
+  .left-toolbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tool-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    flex-shrink: 0;
+  }
+  .tool-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+  .tooltip {
+    display: none !important;
+  }
+
+  /* 3. BOTTOM BAR THU GỌN VỪA KHUNG ĐIỆN THOẠI */
+  .bottom-bar {
+    bottom: max(6px, env(safe-area-inset-bottom));
+    left: 6px;
+    right: 6px;
+    transform: none;
+    width: auto;
+    max-width: calc(100vw - 12px);
+    height: 42px;
+    padding: 0 8px;
+    gap: 8px;
+    border-radius: 12px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  }
+  .bottom-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .brush-types {
+    padding: 2px;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+  .brush-tab {
+    padding: 3px 6px;
+    font-size: 11px;
+    border-radius: 4px;
+  }
+
+  .color-palette {
+    gap: 5px;
+    flex-shrink: 0;
+  }
+  .color-dot {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+  }
+  .custom-color-input {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+  }
+
+  .size-slider-wrapper {
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .size-slider-wrapper input[type="range"] {
+    width: 48px;
+  }
+  .slider-label {
+    font-size: 10px;
+    min-width: 20px;
+  }
+
+  /* 4. ZOOM CONTROLS HUD TRÊN ĐIỆN THOẠI */
+  .bottom-right-hud {
+    bottom: 54px;
+    right: 6px;
+    gap: 6px;
+    z-index: 55;
+  }
+  .zoom-controls {
+    padding: 2px 6px;
+    gap: 3px;
+    border-radius: 8px;
+    height: 30px;
+  }
+  .zoom-btn {
+    width: 22px;
+    height: 22px;
+    font-size: 12px;
+  }
+  .zoom-val {
+    font-size: 10.5px;
+    min-width: 34px;
+  }
+
+  /* 5. CÂY PHÂN CẤP INSPECTOR TRỞ THÀNH DRAWER TRÊN ĐIỆN THOẠI */
+  .inspector-panel {
+    position: fixed;
+    top: 52px;
+    right: 8px;
+    bottom: 56px;
+    width: min(320px, calc(100vw - 20px));
+    max-height: none;
+    border-radius: 14px;
+    z-index: 1000;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.85);
+    transform: translateX(120%);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.25s ease, opacity 0.25s ease;
+  }
+  .inspector-panel.mobile-open {
+    transform: translateX(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* 6. CÁC MODAL HỘP THOẠI TRÊN ĐIỆN THOẠI */
+  .math-ocr-modal .glass-panel,
+  #modal-sessions .glass-panel,
+  #modal-export-options .glass-panel {
+    width: calc(100vw - 20px) !important;
+    max-width: 420px !important;
+    max-height: 88vh !important;
+    padding: 14px !important;
+    margin: 8px !important;
+    border-radius: 14px !important;
+  }
+}
+
+/* ĐIỆN THOẠI MÀN HÌNH NHỎ (<= 480px) */
+@media (max-width: 480px) {
+  .top-bar .btn-action span:not(#label-active-session-name) {
+    display: none !important;
+  }
+  .top-bar .btn-action {
+    padding: 0 6px !important;
+  }
+}
+
+/* ĐIỆN THOẠI XOAY NGANG (LANDSCAPE) */
+@media (max-height: 500px) and (orientation: landscape) {
+  .top-bar {
+    height: 36px;
+    padding: 0 6px;
+  }
+  .left-toolbar {
+    max-height: calc(100vh - 84px);
+    gap: 2px;
+  }
+  .tool-btn {
+    width: 28px;
+    height: 28px;
+  }
+  .tool-btn svg {
+    width: 14px;
+    height: 14px;
+  }
+  .bottom-bar {
+    height: 36px;
+    bottom: 4px;
+  }
+  .bottom-right-hud {
+    bottom: 44px;
+  }
+}
+
+
+
 
 
 

@@ -331,17 +331,22 @@ export class SceneGraph {
   }
 
   computeWorldTransform(targetId) {
-    const traverse = (node, currentAccum) => {
-      const nodeWorld = currentAccum.then(node.transform);
+    const traverse = (node, parentContentWorld) => {
+      const nodeWorld = (node.id === this.root.id)
+        ? Transform2D.identity()
+        : node.transform.then(parentContentWorld);
+
       if (node.id === targetId) return nodeWorld;
 
       const innerTransform = (node.localContentTransform && node.id !== this.root.id)
         ? node.localContentTransform()
         : Transform2D.identity();
-      const childBaseWorld = nodeWorld.then(innerTransform);
+      const nodeContentWorld = (node.id === this.root.id)
+        ? Transform2D.identity()
+        : innerTransform.then(nodeWorld);
 
       for (const child of node.children) {
-        const res = traverse(child, childBaseWorld);
+        const res = traverse(child, nodeContentWorld);
         if (res) return res;
       }
       return null;
@@ -382,17 +387,27 @@ export class SceneGraph {
   }
 
   hitTestCanvas(worldPt) {
-    const traverse = (node, parentWorldTransform) => {
-      const nodeWorldTransform = parentWorldTransform.then(node.transform);
-      const inv = nodeWorldTransform.inverse();
+    const traverse = (node, parentContentWorld) => {
+      const nodeWorld = (node.id === this.root.id)
+        ? Transform2D.identity()
+        : node.transform.then(parentContentWorld);
+
+      const inv = nodeWorld.inverse();
       if (!inv) return null;
 
       const localPt = inv.transformPoint(worldPt);
       if (!node.containsLocalPoint(localPt)) return null;
 
+      const innerTransform = (node.localContentTransform && node.id !== this.root.id)
+        ? node.localContentTransform()
+        : Transform2D.identity();
+      const nodeContentWorld = (node.id === this.root.id)
+        ? Transform2D.identity()
+        : innerTransform.then(nodeWorld);
+
       // Children first (topmost drawn on top)
       for (let i = node.children.length - 1; i >= 0; i--) {
-        const hit = traverse(node.children[i], nodeWorldTransform);
+        const hit = traverse(node.children[i], nodeContentWorld);
         if (hit) return hit;
       }
 

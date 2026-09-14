@@ -27,6 +27,9 @@ export class SyncClient {
     this.onBoardPresenceCallback = options.onBoardPresence || null;
     this.onStatusCallback = options.onStatus || null;
     this.onConnectCallback = options.onConnect || null;
+    this.onDiscoveredCallback = options.onDiscovered || null;
+    this.failedConnectAttempts = 0;
+    this.isAutoDiscovering = false;
   }
 
   _resolveDefaultHost() {
@@ -76,6 +79,186 @@ export class SyncClient {
     return this.host;
   }
 
+  // --- LAN Auto-Discovery Engine ---
+  /**
+   * Phát hiện các dải mạng subnet tiềm năng thông qua WebRTC ICE Candidates và các dải thông dụng
+   */
+  async _detectSubnetCandidates() {
+    const subnets = new Set();
+
+    // 1. Thêm subnet từ host hiện tại
+    if (this.host && /^(\d{1,3}\.){3}\d{1,3}$/.test(this.host)) {
+      const parts = this.host.split('.');
+      subnets.add(`${parts[0]}.${parts[1]}.${parts[2]}.`);
+    }
+
+    // 2. Thử lấy IP local qua WebRTC STUN/Host candidates (hoạt động không cần mạng ngoài)
+    try {
+      const detectedIp = await new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve(null), 800);
+        try {
+          const RTCPC = window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection;
+          if (!RTCPC) return resolve(null);
+
+          const pc = new RTCPC({ iceServers: [] });
+          pc.createDataChannel('');
+          pc.createOffer().then((offer) => pc.setLocalDescription(offer)).catch(() => resolve(null));
+          pc.onicecandidate = (event) => {
+            if (!event || !event.candidate || !event.candidate.candidate) return;
+            const cand = event.candidate.candidate;
+            const match = cand.match(/([0-9]{1,3}(\.[0-9]{1,3}){3})/);
+            if (match && match[1] && !match[1].startsWith('127.')) {
+              clearTimeout(timeout);
+              try { pc.close(); } catch (e) {}
+              resolve(match[1]);
+            }
+          };
+        } catch (e) {
+          clearTimeout(timeout);
+          resolve(null);
+        }
+      });
+
+      if (detectedIp) {
+        const parts = detectedIp.split('.');
+        subnets.add(`${parts[0]}.${parts[1]}.${parts[2]}.`);
+      }
+    } catch (e) {}
+
+    // 3. Bổ sung các subnet LAN phổ biến nhất ở gia đình, trường học và điểm phát 4G/Hotspot
+    subnets.add('192.168.1.');   // Router phổ biến (VNPT, Viettel, FPT, Asus, TP-Link)
+    subnets.add('192.168.0.');   // D-Link, TP-Link
+    subnets.add('172.20.10.');   // iPhone / iOS Personal Hotspot
+    subnets.add('192.168.43.');  // Android Wi-Fi Hotspot
+    subnets.add('192.168.100.'); // Huawei / ZTE PON Routers
+
+    return Array.from(subnets);
+  }
+
+  /**
+   * Quét nhanh tìm máy chủ PC NestedCanvas qua HTTP GET /health
+   * @param {Object} opts
+   * @param {number} opts.timeoutMs - Timeout mỗi request ping (mặc định 600ms)
+   * @param {Function} opts.onProgress - Callback cập nhật tiến độ ({ scanned, total, currentIp })
+   * @returns {Promise<{ success: boolean, ip?: string, data?: any }>}
+   */
+  async discoverServer(opts = {}) {
+    const timeoutMs = opts.timeoutMs || 600;
+    const port = this.port || 8765;
+    const onProgress = opts.onProgress || (() => {});
+    const onFound = opts.onFound || (() => {});
+
+    console.log('[SyncClient] 🔍 Starting LAN Auto-Discovery on port', port);
+
+    // 1. Thử ping nhanh máy chủ host hiện tại và localhost trước
+    const quickTargets = [this.host, '127.0.0.1', 'localhost'].filter(Boolean);
+    for (const target of quickTargets) {
+      const res = await this._pingServer(target, port, 400);
+      if (res.success) {
+        console.log(`[SyncClient] ✅ Quick found server at ${target}`);
+        this.setHost(target);
+        onFound(target, res.data);
+        return { success: true, ip: target, data: res.data };
+      }
+    }
+
+    // 2. Thu thập danh sách subnet
+    const candidateSubnets = await this._detectSubnetCandidates();
+
+    // 3. Tạo danh sách IP để quét
+    // Ưu tiên dải từ .2 đến .150 (nơi thường cấp DHCP cho laptop/PC), sau đó đến .151-.254
+    const ipList = [];
+    for (const subnet of candidateSubnets) {
+      // Ưu tiên quét IP trước
+      for (let i = 2; i <= 120; i++) {
+        ipList.push(`${subnet}${i}`);
+      }
+      for (let i = 121; i <= 254; i++) {
+        ipList.push(`${subnet}${i}`);
+      }
+    }
+
+    const total = ipList.length;
+    let scanned = 0;
+    let foundResult = null;
+    const globalAbort = new AbortController();
+
+    // Quét theo từng batch đồng thời (batchSize = 35) để không gây nghẽn mạng
+    const batchSize = 35;
+    for (let b = 0; b < ipList.length; b += batchSize) {
+      if (foundResult) break;
+      const batch = ipList.slice(b, b + batchSize);
+
+      await Promise.all(
+        batch.map(async (ip) => {
+          if (foundResult) return;
+          try {
+            const check = await this._pingServer(ip, port, timeoutMs, globalAbort.signal);
+            scanned++;
+            onProgress({ scanned, total, currentIp: ip });
+            if (check.success && !foundResult) {
+              foundResult = { ip, data: check.data };
+              globalAbort.abort(); // Dừng tất cả các request khác ngay lập tức
+            }
+          } catch (e) {
+            scanned++;
+            onProgress({ scanned, total, currentIp: ip });
+          }
+        })
+      );
+
+      if (foundResult) break;
+    }
+
+    if (foundResult) {
+      console.log(`[SyncClient] 🎉 Server discovered at IP: ${foundResult.ip}`);
+      this.setHost(foundResult.ip);
+      onFound(foundResult.ip, foundResult.data);
+      return { success: true, ip: foundResult.ip, data: foundResult.data };
+    }
+
+    console.log('[SyncClient] ❌ Auto-Discovery finished: No server found.');
+    return { success: false };
+  }
+
+  async _pingServer(ip, port, timeoutMs = 600, externalSignal = null) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    // Liên kết external signal nếu có
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        clearTimeout(timeoutId);
+        return { success: false };
+      }
+      externalSignal.addEventListener('abort', () => {
+        clearTimeout(timeoutId);
+        controller.abort();
+      });
+    }
+
+    try {
+      const url = `http://${ip}:${port}/health`;
+      const res = await fetch(url, {
+        method: 'GET',
+        signal: controller.signal,
+        headers: { 'Accept': 'application/json' },
+      });
+      clearTimeout(timeoutId);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && (data.app === 'nestedcanvas' || data.server?.includes('NestedCanvas'))) {
+          return { success: true, data };
+        }
+      }
+    } catch (e) {
+      // Timeout hoặc kết nối thất bại
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    return { success: false };
+  }
+
   setHost(newHost) {
     if (!newHost) return;
     const cleanHost = newHost.replace(/^https?:\/\//, '').replace(/^wss?:\/\//, '').split(':')[0].trim();
@@ -120,6 +303,8 @@ export class SyncClient {
 
     this.ws.onopen = () => {
       this.isConnected = true;
+      this.failedConnectAttempts = 0;
+      this.isAutoDiscovering = false;
       console.log(`[SyncClient] Connected to LAN sync server at ${url}`);
       if (this.onStatusCallback) this.onStatusCallback(true);
       if (this.onConnectCallback) this.onConnectCallback();
@@ -175,7 +360,14 @@ export class SyncClient {
 
     this.ws.onclose = () => {
       this.isConnected = false;
+      this.failedConnectAttempts++;
       if (this.onStatusCallback) this.onStatusCallback(false);
+
+      // Nếu không kết nối được sau 2 lần thử và chưa quét, tự động quét mạng LAN tìm PC
+      if (this.failedConnectAttempts >= 2 && !this.isAutoDiscovering && !this.isManualClose) {
+        this._triggerBackgroundDiscovery();
+      }
+
       if (!this.isManualClose) {
         this._scheduleReconnect();
       }
@@ -184,6 +376,28 @@ export class SyncClient {
     this.ws.onerror = (err) => {
       // WebSocket errors will be followed by onclose
     };
+  }
+
+  async _triggerBackgroundDiscovery() {
+    this.isAutoDiscovering = true;
+    console.log('[SyncClient] 🔍 Auto-triggering background LAN Discovery...');
+    try {
+      const result = await this.discoverServer({
+        timeoutMs: 500,
+        onFound: (ip, data) => {
+          if (this.onDiscoveredCallback) {
+            this.onDiscoveredCallback(ip, data);
+          }
+        }
+      });
+      if (result.success) {
+        this.failedConnectAttempts = 0;
+      }
+    } catch (e) {
+      console.warn('[SyncClient] Background discovery error:', e);
+    } finally {
+      this.isAutoDiscovering = false;
+    }
   }
 
   _scheduleReconnect() {
