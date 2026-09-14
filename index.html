@@ -634,6 +634,60 @@
       </div>
     </div>
 
+    <!-- MÀN HÌNH CHỜ ĐỒNG BỘ BẮT BUỘC TRÊN MOBILE (SYNC GATE OVERLAY) -->
+    <div id="mobile-sync-gate-overlay" class="sync-gate-overlay" style="display: none;">
+      <div class="sync-gate-card glass-panel">
+        <!-- Logo & Animation Radar Scan -->
+        <div class="sync-gate-radar-wrap">
+          <div class="sync-gate-radar-wave wave-1"></div>
+          <div class="sync-gate-radar-wave wave-2"></div>
+          <div class="sync-gate-radar-wave wave-3"></div>
+          <div class="sync-gate-icon-center" id="sync-gate-icon">
+            <span style="font-size: 28px;">📡</span>
+          </div>
+        </div>
+
+        <div class="sync-gate-header">
+          <h2 class="sync-gate-title" id="sync-gate-title">Đang Quét Tìm Máy Tính PC</h2>
+          <p class="sync-gate-desc" id="sync-gate-desc">Tự động dò IP động trong mạng Wi-Fi và đồng bộ bài giảng từ PC về điện thoại...</p>
+        </div>
+
+        <!-- Live Scanning Indicator -->
+        <div class="sync-gate-progress-box" id="sync-gate-progress-box">
+          <div class="sync-gate-progress-bar-bg">
+            <div class="sync-gate-progress-bar-fill" id="sync-gate-progress-fill" style="width: 25%;"></div>
+          </div>
+          <div class="sync-gate-status-text">
+            <span id="sync-gate-spinner">⏳</span>
+            <span id="sync-gate-ip-hint">Đang dò quét các dải IP Wi-Fi...</span>
+          </div>
+        </div>
+
+        <!-- Hộp trợ giúp / Thao tác khi chưa tìm thấy PC -->
+        <div class="sync-gate-fallback" id="sync-gate-fallback" style="display: none;">
+          <div class="sync-gate-alert">
+            <span>⚠️ Chưa tìm thấy PC. Hãy kiểm tra điện thoại và máy tính đã kết nối chung 1 mạng Wi-Fi chưa.</span>
+          </div>
+
+          <div class="sync-gate-input-group">
+            <input type="text" id="sync-gate-manual-ip" placeholder="Nhập IP PC (vd: 192.168.1.121)" />
+            <button id="sync-gate-btn-connect-ip" class="btn-action primary" style="padding: 8px 14px; font-size: 12px; cursor: pointer; white-space: nowrap;">Kết Nối</button>
+          </div>
+
+          <button id="sync-gate-btn-rescan" class="btn-action" style="width: 100%; justify-content: center; padding: 9px 14px; font-size: 12.5px; background: rgba(88,166,255,0.15); color: #58a6ff; border: 1px solid rgba(88,166,255,0.35); font-weight: 600; cursor: pointer;">
+            <span>🔄</span> Quét Lại Mạng Wi-Fi
+          </button>
+        </div>
+
+        <!-- Nút dự phòng: Mở ngoại tuyến -->
+        <div class="sync-gate-footer">
+          <button id="sync-gate-btn-offline" class="sync-gate-link-btn" title="Vào vẽ độc lập không đồng bộ với PC">
+            Mở ở chế độ Ngoại Tuyến (Offline) →
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Modal Lobby Dành Cho Thiết Bị Ngoài Vào Trực Tiếp URL Gốc (Tránh Lộ Bảng Mẹ) -->
     <div class="math-ocr-modal" id="modal-remote-lobby"
       style="display:none; align-items:center; justify-content:center;">

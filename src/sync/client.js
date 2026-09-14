@@ -153,6 +153,7 @@ export class SyncClient {
     // 1. Thử ping nhanh máy chủ host hiện tại, 192.168.1.121 và localhost trước
     const quickTargets = Array.from(new Set([this.host, '192.168.1.121', '127.0.0.1', 'localhost'].filter(Boolean)));
     for (const target of quickTargets) {
+      onProgress({ scanned: 1, total: 100, currentIp: target });
       const res = await this._pingServer(target, port, 400);
       if (res.success) {
         console.log(`[SyncClient] ✅ Quick found server at ${target}`);

@@ -4147,23 +4147,111 @@ class NestedCanvasApp {
       });
     }
 
-    this.syncClient.connect();
+    // === MÀN HÌNH CHỜ ĐỒNG BỘ BẮT BUỘC TRÊN MOBILE (SYNC GATE) ===
+    const isMobileClient = !!(window.Capacitor?.isNativePlatform() || window.location.protocol === 'capacitor:' || (window.location.hostname === 'localhost' && (!window.location.port || window.location.port === '')) || (typeof window !== 'undefined' && window.innerWidth <= 768 && !window.location.search.includes('display')));
 
-    // Tự động quét tìm PC khi mở app trên Capacitor / Mobile nếu chưa kết nối được
-    const isCapacitor = !!(window.Capacitor?.isNativePlatform() || window.location.protocol === 'capacitor:' || (window.location.hostname === 'localhost' && (!window.location.port || window.location.port === '')));
-    if (isCapacitor) {
+    const syncGateOverlay = document.getElementById('mobile-sync-gate-overlay');
+    const syncGateTitle = document.getElementById('sync-gate-title');
+    const syncGateDesc = document.getElementById('sync-gate-desc');
+    const syncGateProgressFill = document.getElementById('sync-gate-progress-fill');
+    const syncGateSpinner = document.getElementById('sync-gate-spinner');
+    const syncGateIpHint = document.getElementById('sync-gate-ip-hint');
+    const syncGateFallback = document.getElementById('sync-gate-fallback');
+    const syncGateManualIp = document.getElementById('sync-gate-manual-ip');
+    const syncGateBtnConnectIp = document.getElementById('sync-gate-btn-connect-ip');
+    const syncGateBtnRescan = document.getElementById('sync-gate-btn-rescan');
+    const syncGateBtnOffline = document.getElementById('sync-gate-btn-offline');
+
+    const closeSyncGate = () => {
+      if (!syncGateOverlay) return;
+      syncGateOverlay.classList.add('sync-gate-fade-out');
       setTimeout(() => {
-        if (!this.syncClient.isConnected) {
-          console.log('[App] Auto-triggering first-time discovery for mobile app...');
-          this.syncClient.discoverServer({
-            timeoutMs: 500,
-            onFound: (ip, data) => {
-              if (inputServerHost) inputServerHost.value = ip;
-              this.showToast(`🎉 Đã tự động kết nối PC (${ip})!`, 3500);
-            }
-          });
+        syncGateOverlay.style.display = 'none';
+      }, 450);
+    };
+
+    let isGateScanning = false;
+    const startGateDiscovery = async () => {
+      if (isGateScanning) return;
+      isGateScanning = true;
+      if (syncGateFallback) syncGateFallback.style.display = 'none';
+      if (syncGateTitle) syncGateTitle.textContent = 'Đang Quét Tìm Máy Tính PC';
+      if (syncGateDesc) syncGateDesc.textContent = 'Tự động dò IP động trong mạng Wi-Fi và đồng bộ bài giảng từ PC về điện thoại...';
+      if (syncGateProgressFill) syncGateProgressFill.style.width = '15%';
+      if (syncGateSpinner) syncGateSpinner.textContent = '⏳';
+      if (syncGateIpHint) syncGateIpHint.textContent = 'Bắt đầu quét mạng Wi-Fi...';
+
+      try {
+        const res = await this.syncClient.discoverServer({
+          timeoutMs: 450,
+          onProgress: ({ scanned, total, currentIp }) => {
+            const pct = Math.min(95, Math.max(15, Math.round((scanned / total) * 100)));
+            if (syncGateProgressFill) syncGateProgressFill.style.width = `${pct}%`;
+            if (syncGateIpHint) syncGateIpHint.textContent = `Đang dò: ${currentIp} (${pct}%)`;
+          },
+          onFound: (ip, data) => {
+            if (syncGateProgressFill) syncGateProgressFill.style.width = '90%';
+            if (syncGateSpinner) syncGateSpinner.textContent = '⚡';
+            if (syncGateTitle) syncGateTitle.textContent = `Đã Tìm Thấy PC: ${ip}!`;
+            if (syncGateDesc) syncGateDesc.textContent = 'Đang kết nối và tải toàn bộ dữ liệu bài giảng...';
+            if (syncGateIpHint) syncGateIpHint.textContent = `Máy chủ: ${ip}:${this.syncClient.port || 8765}`;
+            if (syncGateManualIp) syncGateManualIp.value = ip;
+            if (inputServerHost) inputServerHost.value = ip;
+          }
+        });
+
+        if (!res.success) {
+          if (syncGateTitle) syncGateTitle.textContent = 'Chưa Tìm Thấy Máy Tính PC';
+          if (syncGateDesc) syncGateDesc.textContent = 'Hãy đảm bảo máy tính đã bật NestedCanvas và cả 2 thiết bị kết nối chung 1 mạng Wi-Fi.';
+          if (syncGateSpinner) syncGateSpinner.textContent = '❌';
+          if (syncGateIpHint) syncGateIpHint.textContent = 'Đã quét hết dải IP mạng Wi-Fi hiện tại.';
+          if (syncGateFallback) syncGateFallback.style.display = 'flex';
+          if (syncGateProgressFill) syncGateProgressFill.style.width = '100%';
         }
-      }, 1500);
+      } catch (err) {
+        console.warn('[SyncGate] Scan error:', err);
+      } finally {
+        isGateScanning = false;
+      }
+    };
+
+    if (syncGateBtnOffline) {
+      syncGateBtnOffline.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.showToast('🚀 Đang mở ở chế độ Ngoại Tuyến (Offline)', 3000);
+        closeSyncGate();
+      });
+    }
+
+    if (syncGateBtnRescan) {
+      syncGateBtnRescan.addEventListener('click', (e) => {
+        e.stopPropagation();
+        startGateDiscovery();
+      });
+    }
+
+    if (syncGateBtnConnectIp && syncGateManualIp) {
+      syncGateBtnConnectIp.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const val = syncGateManualIp.value.trim();
+        if (val) {
+          this.syncClient.setHost(val);
+          if (syncGateIpHint) syncGateIpHint.textContent = `Đang kết nối tới ${val}...`;
+          if (syncGateSpinner) syncGateSpinner.textContent = '⏳';
+          this.syncClient.connect();
+        }
+      });
+    }
+
+    if (isMobileClient && syncGateOverlay) {
+      syncGateOverlay.style.display = 'flex';
+      if (syncGateManualIp) syncGateManualIp.value = this.syncClient.getHost() || '192.168.1.121';
+      // Tự động quét dải mạng tìm PC động ngay lập tức
+      setTimeout(() => {
+        startGateDiscovery();
+      }, 300);
+    } else {
+      this.syncClient.connect();
     }
 
     // Thiết lập Giao diện Mobile Single Board nếu người dùng truy cập ?board=...
@@ -4180,6 +4268,35 @@ class NestedCanvasApp {
 
     // Nhận các sự kiện từ Sync Server
     this.syncClient.on('WELCOME', (data) => {
+      // Nếu có dữ liệu toàn cảnh canvas từ PC, nạp vào scene của mobile
+      if (data.last_canvas_scene) {
+        try {
+          this.scene.loadFromJSON(data.last_canvas_scene);
+          if (data.last_canvas_camera) {
+            if (typeof data.last_canvas_camera.zoom === 'number' && data.last_canvas_camera.zoom > 0) {
+              this.camera.zoom = data.last_canvas_camera.zoom;
+            }
+            if (data.last_canvas_camera.pan && typeof data.last_canvas_camera.pan.x === 'number') {
+              this.camera.pan = new Vec2(data.last_canvas_camera.pan.x, data.last_canvas_camera.pan.y);
+            }
+          }
+          this.updateHierarchyTree();
+          this.updateUI();
+        } catch (e) {
+          console.warn('[App] Error applying last_canvas_scene:', e);
+        }
+      }
+
+      // Đóng màn hình Sync Gate khi đồng bộ xong
+      if (syncGateOverlay && syncGateOverlay.style.display !== 'none') {
+        if (syncGateTitle) syncGateTitle.textContent = 'Đồng Bộ Thành Công!';
+        if (syncGateDesc) syncGateDesc.textContent = `Đã kết nối PC (${this.syncClient.getHost()}) & tải xong bài giảng.`;
+        if (syncGateProgressFill) syncGateProgressFill.style.width = '100%';
+        if (syncGateSpinner) syncGateSpinner.textContent = '✅';
+        if (syncGateIpHint) syncGateIpHint.textContent = `Sẵn sàng trên cổng ${this.syncClient.port || 8765}`;
+        setTimeout(closeSyncGate, 650);
+      }
+
       if (this.isSingleBoardMode && this.singleBoardId) {
         // Tham gia phòng của bảng con này
         this.syncClient.joinBoard(this.singleBoardId);
@@ -4197,6 +4314,30 @@ class NestedCanvasApp {
         }
         this.updateHierarchyTree();
         this.checkRemoteLobby(data.shared_boards || []);
+      }
+    });
+
+    // Nhận toàn cảnh Canvas Mirror thời gian thực từ PC
+    this.syncClient.on('CANVAS_MIRROR', (data) => {
+      if (data && data.scene) {
+        try {
+          this.scene.loadFromJSON(data.scene);
+          if (data.camera) {
+            if (typeof data.camera.zoom === 'number' && data.camera.zoom > 0) {
+              this.camera.zoom = data.camera.zoom;
+            }
+            if (data.camera.pan && typeof data.camera.pan.x === 'number') {
+              this.camera.pan = new Vec2(data.camera.pan.x, data.camera.pan.y);
+            }
+          }
+          this.updateHierarchyTree();
+          this.updateUI();
+          if (syncGateOverlay && syncGateOverlay.style.display !== 'none') {
+            closeSyncGate();
+          }
+        } catch (e) {
+          console.warn('[App] Error applying CANVAS_MIRROR:', e);
+        }
       }
     });
 

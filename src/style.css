@@ -1828,9 +1828,229 @@ canvas {
   }
 }
 
+/* ==========================================================================
+ * MÀN HÌNH CHỜ ĐỒNG BỘ BẮT BUỘC TRÊN MOBILE (SYNC GATE OVERLAY)
+ * ========================================================================== */
+.sync-gate-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(9, 13, 19, 0.96);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  padding: 16px;
+  box-sizing: border-box;
+  opacity: 1;
+  transition: opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.45s;
+}
 
+.sync-gate-overlay.sync-gate-fade-out {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
 
+.sync-gate-card {
+  width: 100%;
+  max-width: 420px;
+  padding: 28px 22px;
+  border-radius: 20px;
+  background: rgba(13, 17, 23, 0.94);
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.85), 0 0 32px rgba(88, 166, 255, 0.12);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 16px;
+  box-sizing: border-box;
+}
 
+/* Radar Scan Animation */
+.sync-gate-radar-wrap {
+  position: relative;
+  width: 90px;
+  height: 90px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 4px;
+}
 
+.sync-gate-radar-wave {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(88, 166, 255, 0.6);
+  opacity: 0;
+  animation: syncGateRadar 2.4s cubic-bezier(0.2, 0.8, 0.4, 1) infinite;
+}
 
+.sync-gate-radar-wave.wave-2 {
+  animation-delay: 0.8s;
+}
 
+.sync-gate-radar-wave.wave-3 {
+  animation-delay: 1.6s;
+}
+
+@keyframes syncGateRadar {
+  0% {
+    transform: scale(0.4);
+    opacity: 0.8;
+  }
+  70% {
+    opacity: 0.3;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+.sync-gate-icon-center {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(88, 166, 255, 0.25), rgba(35, 134, 54, 0.25));
+  border: 1px solid rgba(88, 166, 255, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 20px rgba(88, 166, 255, 0.3);
+  position: relative;
+  z-index: 2;
+}
+
+.sync-gate-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sync-gate-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: #f0f6fc;
+  letter-spacing: -0.2px;
+}
+
+.sync-gate-desc {
+  margin: 0;
+  font-size: 12.5px;
+  color: #8b949e;
+  line-height: 1.5;
+}
+
+/* Progress bar */
+.sync-gate-progress-box {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.sync-gate-progress-bar-bg {
+  width: 100%;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.sync-gate-progress-bar-fill {
+  height: 100%;
+  width: 30%;
+  background: linear-gradient(90deg, #58a6ff, #3fb950);
+  border-radius: 10px;
+  transition: width 0.25s ease;
+  animation: syncGateProgressPulse 2s ease-in-out infinite;
+}
+
+@keyframes syncGateProgressPulse {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; }
+}
+
+.sync-gate-status-text {
+  font-size: 12px;
+  color: #58a6ff;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-family: monospace;
+}
+
+/* Fallback card */
+.sync-gate-fallback {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+  animation: fadeIn 0.3s ease;
+}
+
+.sync-gate-alert {
+  background: rgba(248, 81, 73, 0.1);
+  border: 1px solid rgba(248, 81, 73, 0.25);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 11.5px;
+  color: #ff7b72;
+  line-height: 1.45;
+  text-align: left;
+}
+
+.sync-gate-input-group {
+  display: flex;
+  gap: 8px;
+}
+
+.sync-gate-input-group input {
+  flex: 1;
+  background: #090d13;
+  border: 1px solid var(--border-subtle);
+  color: #58a6ff;
+  font-family: monospace;
+  font-size: 12.5px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-weight: 600;
+  outline: none;
+}
+
+.sync-gate-input-group input:focus {
+  border-color: #58a6ff;
+  box-shadow: 0 0 8px rgba(88, 166, 255, 0.2);
+}
+
+.sync-gate-footer {
+  margin-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 12px;
+  width: 100%;
+}
+
+.sync-gate-link-btn {
+  background: none;
+  border: none;
+  color: #8b949e;
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: color 0.15s;
+}
+
+.sync-gate-link-btn:hover {
+  color: #c9d1d9;
+  text-decoration: underline;
+}
