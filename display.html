@@ -22,7 +22,10 @@
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         color: #f0f6fc;
         user-select: none;
-        cursor: none !important; /* Không hiển thị con trỏ chuột trên màn chiếu */
+      }
+
+      body.hide-cursor, body.hide-cursor * {
+        cursor: none !important;
       }
 
       #app-display {
@@ -30,7 +33,6 @@
         width: 100vw;
         height: 100vh;
         overflow: hidden;
-        cursor: none !important;
       }
 
       .display-canvas-container {
@@ -39,7 +41,6 @@
         width: 100%;
         height: 100%;
         z-index: 1;
-        cursor: none !important;
       }
 
       #display-canvas {
@@ -48,7 +49,6 @@
         height: 100%;
         touch-action: none;
         pointer-events: none !important; /* Hoàn toàn không tương tác */
-        cursor: none !important;
       }
 
       /* Màn hình chờ - chỉ hiện thoáng qua khi chưa có bất kỳ dữ liệu canvas nào */
@@ -86,11 +86,21 @@
       }
     </style>
   </head>
-  <body>
+  <body class="hide-cursor">
     <div id="app-display">
       <!-- Fullscreen Non-Interactive Mirror Canvas -->
       <div class="display-canvas-container" id="display-canvas-container">
         <canvas id="display-canvas"></canvas>
+      </div>
+
+      <!-- Thanh Điều Khiển Màn Chiếu Nổi (Tự động hiện khi rê chuột hoặc dùng phím 1, 2, 3) -->
+      <div id="display-controls-hud" style="position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 8px; padding: 6px 14px; background: rgba(15, 23, 42, 0.90); border: 1px solid rgba(88, 166, 255, 0.35); border-radius: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.6); backdrop-filter: blur(16px); transition: opacity 0.35s ease, transform 0.35s ease; opacity: 0; pointer-events: none;">
+        <span style="font-size: 11px; font-weight: 700; color: #8b949e; letter-spacing: 0.5px; text-transform: uppercase; margin-right: 4px;">🖥️ MÀN CHIẾU:</span>
+        <button id="btn-pc-mode-single" class="btn-action active" style="padding: 4px 10px; font-size: 11px; border-radius: 16px;" title="Chiếu 1 bảng toàn màn hình (Phím 1)">1 Bảng (1)</button>
+        <button id="btn-pc-mode-dual" class="btn-action" style="padding: 4px 10px; font-size: 11px; border-radius: 16px;" title="Chiếu 2 bảng song song ghép đôi (Phím 2)">2 Bảng Song Song (2)</button>
+        <button id="btn-pc-mode-grid" class="btn-action" style="padding: 4px 10px; font-size: 11px; border-radius: 16px;" title="Chiếu tất cả bảng dạng lưới (Phím 3)">Lưới Tất Cả (3)</button>
+        <div style="width: 1px; height: 16px; background: rgba(255,255,255,0.15); margin: 0 2px;"></div>
+        <button id="btn-pc-fullscreen" class="btn-action" style="padding: 4px 10px; font-size: 11px; border-radius: 16px;" title="Toàn màn hình (F11)">⛶ F11</button>
       </div>
 
       <!-- Màn hình chờ chuyên nghiệp (tự động ẩn khi có nét vẽ hoặc bảng được chiếu) -->

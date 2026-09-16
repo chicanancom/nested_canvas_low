@@ -209,16 +209,30 @@ export class CanvasRenderer {
     ctx.save();
     ctx.scale(dpr, dpr);
 
-    const screenW = this.cachedWidth;
-    const screenH = this.cachedHeight;
-    camera.viewportWidth = screenW;
-    camera.viewportHeight = screenH;
+    const isCustomViewport = !!options?.viewport;
+    const vx = options?.viewport?.x || 0;
+    const vy = options?.viewport?.y || 0;
+    const vw = options?.viewport?.width || this.cachedWidth;
+    const vh = options?.viewport?.height || this.cachedHeight;
+
+    if (isCustomViewport) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(vx, vy, vw, vh);
+      ctx.clip();
+      ctx.translate(vx, vy);
+      camera.viewportWidth = vw;
+      camera.viewportHeight = vh;
+    } else {
+      camera.viewportWidth = this.cachedWidth;
+      camera.viewportHeight = this.cachedHeight;
+    }
 
     // 1. Draw Infinite Mother Canvas (Canvas Mẹ) Background & Grid
-    this.drawInfiniteGrid(ctx, camera, screenW, screenH, scene);
+    this.drawInfiniteGrid(ctx, camera, vw, vh, scene);
 
     // 2. Viewport Frustum for Culling
-    const viewportFrustum = AABB.fromOriginSize(0, 0, screenW, screenH);
+    const viewportFrustum = AABB.fromOriginSize(0, 0, vw, vh);
     const worldToScreen = camera.worldToScreenTransform();
 
     // 3. Render Hierarchy: Root (Canvas Mẹ) & Child Boards (Bảng Con)
@@ -249,6 +263,10 @@ export class CanvasRenderer {
     // 6. Draw OCR Highlight Blocks
     if (ocrHighlightBoxes && ocrHighlightBoxes.length > 0) {
       this.drawOcrHighlightBoxes(ctx, ocrHighlightBoxes, scene, camera);
+    }
+
+    if (isCustomViewport) {
+      ctx.restore();
     }
 
     ctx.restore();

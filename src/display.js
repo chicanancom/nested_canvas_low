@@ -42,6 +42,13 @@ class PCDisplayApp {
     this.targetPan = null;
     this._saveStateTimer = null;
 
+    // Multi-Page & Multi-Board Display Mode State
+    this.pages = [];
+    this.currentPageIndex = 0;
+    this.displayMode = 'single'; // 'single', 'dual', 'grid'
+    this.hudElement = document.getElementById('display-controls-hud');
+    this.hudTimer = null;
+
     console.log('[PC Display] 🚀 Starting Fullscreen PC Display App...');
 
     // Đảm bảo kích thước renderer khớp 100% với cửa sổ
@@ -49,6 +56,9 @@ class PCDisplayApp {
 
     // Tải dữ liệu canvas đã lưu từ phiên trước
     this.loadDisplayState();
+
+    // Khởi tạo thanh điều khiển nổi HUD cho màn chiếu
+    this.initDisplayHUD();
 
     // Xử lý sự kiện cửa sổ & phím tắt (F11)
     this.bindWindowEvents();
@@ -110,20 +120,350 @@ class PCDisplayApp {
       }
     }
 
+    if (this.displayMode === 'single') {
+      this.renderer.render(
+        this.scene,
+        this.camera,
+        null,
+        null,
+        null,
+        null,
+        null,
+        this.remoteActiveSessions
+      );
+    } else if (this.displayMode === 'dual') {
+      this._renderDualMode();
+    } else if (this.displayMode === 'grid') {
+      this._renderGridMode();
+    }
+
+    // Tiếp tục nếu camera vẫn đang lerp
+    if (this._isCameraLerping()) {
+      this.scheduleRender();
+    }
+  }
+
+  _renderDualMode() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const halfW = Math.floor(w / 2);
+    const ctx = this.renderer.ctx;
+
+    // Slot 1 (Bên trái): Trang trước hoặc trang tham chiếu (Index - 1 nếu có, hoặc trang 0)
+    let leftIndex = this.currentPageIndex - 1;
+    if (leftIndex < 0) leftIndex = (this.pages.length > 1) ? 1 : 0;
+    const rightIndex = this.currentPageIndex;
+
+    const leftPage = this.pages[leftIndex];
+    const rightPage = this.pages[rightIndex];
+
+    const vpLeft = { x: 0, y: 0, width: halfW, height: h };
+    const vpRight = { x: halfW, y: 0, width: w - halfW, height: h };
+
+    // Render Bảng Trái
+    if (leftPage) {
+      const leftScene = this.getPageScene(leftPage);
+      const leftCam = new Camera(0, 0, 1.0, halfW, h);
+      this.fitSceneInViewport(leftScene, leftCam, halfW, h, 60);
+      this.renderer.render(
+        leftScene,
+        leftCam,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        { viewport: vpLeft, isDisplayMode: true }
+      );
+      this.drawViewportBadge(
+        ctx,
+        16,
+        20,
+        leftPage.name || `Trang ${leftIndex + 1}`,
+        false,
+        false
+      );
+    } else {
+      this.renderer.render(
+        this.scene,
+        this.camera,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        { viewport: vpLeft, isDisplayMode: true }
+      );
+    }
+
+    // Render Bảng Phải (Trang hiện tại đang viết)
+    const rightScene = rightPage ? this.getPageScene(rightPage) : this.scene;
     this.renderer.render(
-      this.scene,
+      rightScene,
       this.camera,
       null,
       null,
       null,
       null,
       null,
-      this.remoteActiveSessions
+      this.remoteActiveSessions,
+      { viewport: vpRight, isDisplayMode: true }
+    );
+    this.drawViewportBadge(
+      ctx,
+      halfW + 16,
+      20,
+      rightPage?.name || `Trang ${rightIndex + 1}`,
+      true,
+      this.remoteActiveSessions && this.remoteActiveSessions.size > 0
     );
 
-    // Tiếp tục nếu camera vẫn đang lerp
-    if (this._isCameraLerping()) {
-      this.scheduleRender();
+    // Đường kẻ phân chia 2 bảng sắc nét hiện đại
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath();
+    ctx.moveTo(halfW, 0);
+    ctx.lineTo(halfW, h);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  _renderGridMode() {
+    const total = Math.max(1, this.pages.length);
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const ctx = this.renderer.ctx;
+
+    // Tính toán số cột và dòng tối ưu cho lưới NxM
+    let cols = 1, rows = 1;
+    if (total === 2) {
+      cols = 2; rows = 1;
+    } else if (total <= 4) {
+      cols = 2; rows = 2;
+    } else if (total <= 6) {
+      cols = 3; rows = 2;
+    } else {
+      cols = Math.ceil(Math.sqrt(total));
+      rows = Math.ceil(total / cols);
+    }
+
+    const cellW = Math.floor(w / cols);
+    const cellH = Math.floor(h / rows);
+
+    for (let i = 0; i < total; i++) {
+      const c = i % cols;
+      const r = Math.floor(i / cols);
+      const vx = c * cellW;
+      const vy = r * cellH;
+      const vw = (c === cols - 1) ? (w - vx) : cellW;
+      const vh = (r === rows - 1) ? (h - vy) : cellH;
+
+      const page = this.pages[i];
+      const pageScene = page ? this.getPageScene(page) : this.scene;
+      const isActive = (i === this.currentPageIndex);
+
+      const cellCam = isActive ? this.camera : new Camera(0, 0, 1.0, vw, vh);
+      if (!isActive) {
+        this.fitSceneInViewport(pageScene, cellCam, vw, vh, 40);
+      }
+
+      const sessions = isActive ? this.remoteActiveSessions : null;
+
+      this.renderer.render(
+        pageScene,
+        cellCam,
+        null,
+        null,
+        null,
+        null,
+        null,
+        sessions,
+        { viewport: { x: vx, y: vy, width: vw, height: vh }, isDisplayMode: true }
+      );
+
+      // Khung viền phân cách từng ô
+      ctx.save();
+      ctx.strokeStyle = isActive ? 'rgba(88, 166, 255, 0.8)' : 'rgba(255, 255, 255, 0.12)';
+      ctx.lineWidth = isActive ? 3 : 1;
+      ctx.setLineDash(isActive ? [] : [4, 4]);
+      ctx.strokeRect(vx + 1, vy + 1, vw - 2, vh - 2);
+      ctx.restore();
+
+      this.drawViewportBadge(
+        ctx,
+        vx + 12,
+        vy + 16,
+        page?.name || `Trang ${i + 1}`,
+        isActive,
+        isActive && sessions && sessions.size > 0
+      );
+    }
+  }
+
+  getPageScene(page) {
+    if (!page) return this.scene;
+    if (page._sceneInstance && page._lastSceneJSON === page.scene) {
+      return page._sceneInstance;
+    }
+    const scene = new SceneGraph();
+    if (page.scene) {
+      scene.loadFromJSON(page.scene);
+      if (page.theme) scene.root.style = page.theme;
+      if (page.gridType) scene.root.gridType = page.gridType;
+    }
+    page._sceneInstance = scene;
+    page._lastSceneJSON = page.scene;
+    return scene;
+  }
+
+  fitSceneInViewport(scene, camera, vw, vh, padding = 40) {
+    const bounds = this.getSceneBoundsFor(scene);
+    if (!bounds) {
+      camera.zoom = 1.0;
+      camera.pan = new Vec2(0, 0);
+      return;
+    }
+    const availW = Math.max(100, vw - padding * 2);
+    const availH = Math.max(100, vh - padding * 2);
+    const zoomW = availW / bounds.width;
+    const zoomH = availH / bounds.height;
+    camera.zoom = Math.max(0.05, Math.min(2.5, Math.min(zoomW, zoomH)));
+    camera.pan = new Vec2(bounds.centerX, bounds.centerY);
+  }
+
+  getSceneBoundsFor(scene) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let count = 0;
+    if (Array.isArray(scene.root.children)) {
+      for (const b of scene.root.children) {
+        count++;
+        const tx = b.transform?.tx || 0;
+        const ty = b.transform?.ty || 0;
+        const w = b.width || 800;
+        const h = b.height || 600;
+        minX = Math.min(minX, tx);
+        minY = Math.min(minY, ty);
+        maxX = Math.max(maxX, tx + w);
+        maxY = Math.max(maxY, ty + h);
+      }
+    }
+    if (Array.isArray(scene.root.elements)) {
+      for (const el of scene.root.elements) {
+        if (Array.isArray(el.points) && el.points.length > 0) {
+          count++;
+          for (const p of el.points) {
+            minX = Math.min(minX, p.x);
+            minY = Math.min(minY, p.y);
+            maxX = Math.max(maxX, p.x);
+            maxY = Math.max(maxY, p.y);
+          }
+        }
+      }
+    }
+    if (count === 0 || !isFinite(minX) || !isFinite(maxX)) return null;
+    return {
+      minX,
+      minY,
+      maxX,
+      maxY,
+      width: Math.max(10, maxX - minX),
+      height: Math.max(10, maxY - minY),
+      centerX: (minX + maxX) * 0.5,
+      centerY: (minY + maxY) * 0.5,
+    };
+  }
+
+  drawViewportBadge(ctx, x, y, title, isActive, isWriting = false) {
+    ctx.save();
+    ctx.font = '600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    const textMetrics = ctx.measureText(title);
+    const badgeW = textMetrics.width + (isWriting ? 34 : 20);
+    const badgeH = 24;
+
+    // Badge Background
+    ctx.fillStyle = isActive ? 'rgba(15, 23, 42, 0.85)' : 'rgba(15, 23, 42, 0.65)';
+    ctx.strokeStyle = isActive ? '#58a6ff' : 'rgba(255, 255, 255, 0.2)';
+    ctx.lineWidth = 1;
+
+    ctx.beginPath();
+    ctx.roundRect ? ctx.roundRect(x, y, badgeW, badgeH, 6) : ctx.rect(x, y, badgeW, badgeH);
+    ctx.fill();
+    ctx.stroke();
+
+    // Text & Dot
+    ctx.fillStyle = isActive ? '#ffffff' : 'rgba(255, 255, 255, 0.7)';
+    ctx.fillText(title, x + 10, y + 16);
+
+    if (isWriting) {
+      ctx.fillStyle = '#3fb950';
+      ctx.beginPath();
+      ctx.arc(x + badgeW - 12, y + 12, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  initDisplayHUD() {
+    if (!this.hudElement) return;
+
+    const btnSingle = document.getElementById('hud-mode-single');
+    const btnDual = document.getElementById('hud-mode-dual');
+    const btnGrid = document.getElementById('hud-mode-grid');
+    const btnFs = document.getElementById('hud-btn-fullscreen');
+
+    if (btnSingle) {
+      btnSingle.addEventListener('click', () => this.setDisplayMode('single', true));
+    }
+    if (btnDual) {
+      btnDual.addEventListener('click', () => this.setDisplayMode('dual', true));
+    }
+    if (btnGrid) {
+      btnGrid.addEventListener('click', () => this.setDisplayMode('grid', true));
+    }
+    if (btnFs) {
+      btnFs.addEventListener('click', () => this.toggleFullscreen());
+    }
+
+    // Auto-hide HUD on inactivity
+    const showHUD = () => {
+      this.hudElement.style.opacity = '1';
+      this.hudElement.style.pointerEvents = 'auto';
+      document.body.classList.remove('hide-cursor');
+      if (this.hudTimer) clearTimeout(this.hudTimer);
+      this.hudTimer = setTimeout(() => {
+        this.hudElement.style.opacity = '0';
+        this.hudElement.style.pointerEvents = 'none';
+        document.body.classList.add('hide-cursor');
+      }, 3000);
+    };
+
+    window.addEventListener('mousemove', showHUD);
+    window.addEventListener('touchstart', showHUD);
+    showHUD();
+  }
+
+  setDisplayMode(mode, broadcast = false) {
+    if (!['single', 'dual', 'grid'].includes(mode)) return;
+    this.displayMode = mode;
+
+    // Cập nhật trạng thái active trên HUD buttons
+    const btnSingle = document.getElementById('hud-mode-single');
+    const btnDual = document.getElementById('hud-mode-dual');
+    const btnGrid = document.getElementById('hud-mode-grid');
+    if (btnSingle) btnSingle.classList.toggle('active', mode === 'single');
+    if (btnDual) btnDual.classList.toggle('active', mode === 'dual');
+    if (btnGrid) btnGrid.classList.toggle('active', mode === 'grid');
+
+    console.log(`[PC Display] 🖥️ Display mode switched to: ${mode}`);
+    this.saveDisplayState();
+    this.requestRender();
+
+    if (broadcast && this.syncClient && this.syncClient.isConnected) {
+      this.syncClient.send('DISPLAY_MODE_SET', { mode });
     }
   }
 
@@ -149,6 +489,9 @@ class PCDisplayApp {
             zoom: this.camera.zoom,
             pan: { x: this.camera.pan.x, y: this.camera.pan.y },
           },
+          pages: this.pages,
+          currentPageIndex: this.currentPageIndex,
+          displayMode: this.displayMode,
           savedAt: Date.now(),
         };
         localStorage.setItem('nestedcanvas_display_mirror_state', JSON.stringify(data));
@@ -161,6 +504,8 @@ class PCDisplayApp {
       localStorage.removeItem('nestedcanvas_display_mirror_state');
     } catch (e) {}
     this.scene = new SceneGraph();
+    this.pages = [];
+    this.currentPageIndex = 0;
     this.hasSceneData = false;
     this.camera = new Camera(0, 0, 1.0, window.innerWidth, window.innerHeight);
     this.updateOverlayVisibility();
@@ -176,6 +521,15 @@ class PCDisplayApp {
         return false;
       }
       const data = JSON.parse(raw);
+      if (Array.isArray(data.pages)) {
+        this.pages = data.pages;
+      }
+      if (typeof data.currentPageIndex === 'number') {
+        this.currentPageIndex = data.currentPageIndex;
+      }
+      if (data.displayMode) {
+        this.setDisplayMode(data.displayMode, false);
+      }
       if (data.scene) {
         this.scene.loadFromJSON(data.scene);
         if (data.theme) this.scene.root.style = data.theme;
@@ -396,15 +750,33 @@ class PCDisplayApp {
         this.hideIdleOverlay();
       }
 
+      if (data.last_display_mode) {
+        this.setDisplayMode(data.last_display_mode, false);
+      }
+      if (Array.isArray(data.last_canvas_pages)) {
+        this.pages = data.last_canvas_pages;
+      }
+      if (typeof data.last_canvas_page_index === 'number') {
+        this.currentPageIndex = data.last_canvas_page_index;
+      }
+
       // Ưu tiên active_session_content nếu có (phiên làm việc thực tế hiện hành)
       if (data.active_session_content && data.active_session_content.scene) {
         this.applyCanvasMirror(
           data.active_session_content.scene,
           data.active_session_content.camera || data.last_canvas_camera,
-          data.active_session_content.theme || { theme: data.active_session_content.scene?.root?.style, gridType: data.active_session_content.scene?.root?.gridType }
+          data.active_session_content.theme || { theme: data.active_session_content.scene?.root?.style, gridType: data.active_session_content.scene?.root?.gridType },
+          data.active_session_content.pages || data.last_canvas_pages,
+          typeof data.active_session_content.currentPageIndex === 'number' ? data.active_session_content.currentPageIndex : data.last_canvas_page_index
         );
       } else if (data.last_canvas_scene) {
-        this.applyCanvasMirror(data.last_canvas_scene, data.last_canvas_camera);
+        this.applyCanvasMirror(
+          data.last_canvas_scene,
+          data.last_canvas_camera,
+          null,
+          data.last_canvas_pages,
+          data.last_canvas_page_index
+        );
       } else if (data.current_cast_board_id && data.current_cast_board_id !== 'canvas' && data.current_cast_board_node) {
         this.applyCastSingleBoard(data.current_cast_board_node);
       } else if (data.current_cast_board_node) {
@@ -425,11 +797,63 @@ class PCDisplayApp {
       }
     });
 
-    // Nhận toàn cảnh Canvas (Full Scene & Camera & Theme)
+    // Nhận toàn cảnh Canvas (Full Scene & Camera & Theme & Pages & DisplayMode)
     this.syncClient.on('CANVAS_MIRROR', (data) => {
       if (data && data.scene) {
         console.log('[PC Display] 📥 Received CANVAS_MIRROR update');
-        this.applyCanvasMirror(data.scene, data.camera, { theme: data.theme, gridType: data.gridType });
+        this.applyCanvasMirror(
+          data.scene,
+          data.camera,
+          { theme: data.theme, gridType: data.gridType },
+          data.pages,
+          data.currentPageIndex
+        );
+        if (data.displayMode) {
+          this.setDisplayMode(data.displayMode, false);
+        }
+      }
+    });
+
+    // Fast-path Page Switch Protocol (Instant Relay <15ms)
+    this.syncClient.on('PAGE_SWITCH', (data) => {
+      if (!data) return;
+      console.log(`[PC Display] ⚡ Instant PAGE_SWITCH to page index ${data.currentPageIndex}`);
+      if (Array.isArray(data.pages)) {
+        this.pages = data.pages;
+      }
+      if (typeof data.currentPageIndex === 'number') {
+        this.currentPageIndex = data.currentPageIndex;
+      }
+      if (data.scene) {
+        this.scene.loadFromJSON(data.scene);
+        const theme = data.theme || data.scene.root?.style || 'chalkboard';
+        const grid = data.gridType || data.scene.root?.gridType || 'grid';
+        this.scene.root.style = theme;
+        this.scene.root.gridType = grid;
+      }
+      if (data.camera) {
+        if (typeof data.camera.zoom === 'number') {
+          this.camera.zoom = data.camera.zoom;
+          this.targetZoom = data.camera.zoom;
+        }
+        if (data.camera.pan) {
+          this.camera.pan = new Vec2(data.camera.pan.x, data.camera.pan.y);
+          this.targetPan = new Vec2(data.camera.pan.x, data.camera.pan.y);
+        }
+      }
+      if (data.displayMode) {
+        this.setDisplayMode(data.displayMode, false);
+      }
+      this.hasSceneData = true;
+      this.hideIdleOverlay();
+      this.saveDisplayState();
+      this.requestRender();
+    });
+
+    // Display Layout / Multi-Board Mode Selection Protocol
+    this.syncClient.on('DISPLAY_MODE_SET', (data) => {
+      if (data && data.mode) {
+        this.setDisplayMode(data.mode, false);
       }
     });
 
@@ -570,9 +994,17 @@ class PCDisplayApp {
     this.requestRender();
   }
 
-  applyCanvasMirror(sceneData, cameraData, themeData = null) {
+  applyCanvasMirror(sceneData, cameraData, themeData = null, pagesData = null, pageIndex = null) {
     if (!sceneData) return;
     this.scene.loadFromJSON(sceneData);
+
+    // Cập nhật danh sách trang nếu có
+    if (Array.isArray(pagesData)) {
+      this.pages = pagesData;
+    }
+    if (typeof pageIndex === 'number') {
+      this.currentPageIndex = pageIndex;
+    }
 
     // Đồng bộ triệt để theme & grid từ dữ liệu nhận được
     const theme = (themeData && themeData.theme) || (themeData && themeData.style) || (sceneData.root && sceneData.root.style) || 'chalkboard';
@@ -640,8 +1072,26 @@ class PCDisplayApp {
   }
 
   applyStrokeAdd(data) {
-    const { nodeId, stroke, clientId, sendTime } = data;
+    const { nodeId, stroke, clientId, sendTime, pageIndex } = data;
     if (!stroke) return;
+
+    // Định tuyến nét vẽ theo pageIndex nếu có và đang ở trang khác
+    let targetScene = this.scene;
+    if (typeof pageIndex === 'number' && this.pages[pageIndex]) {
+      targetScene = this.getPageScene(this.pages[pageIndex]);
+      // Cập nhật luôn json của page đó
+      const pageNode = (nodeId ? targetScene.getNode(nodeId) : null) || targetScene.root;
+      if (pageNode) {
+        const strokeObj = Stroke.fromJSON(stroke);
+        if (!Array.isArray(pageNode.elements)) pageNode.elements = [];
+        if (!pageNode.elements.some((s) => s.id === strokeObj.id)) {
+          pageNode.elements.push(strokeObj);
+        }
+        this.pages[pageIndex].scene = targetScene.toJSON();
+        this.pages[pageIndex]._lastSceneJSON = this.pages[pageIndex].scene;
+      }
+    }
+
     const targetNode = (nodeId ? this.scene.getNode(nodeId) : null) || this.scene.root;
     if (targetNode) {
       const strokeObj = Stroke.fromJSON(stroke);
@@ -728,9 +1178,16 @@ class PCDisplayApp {
     window.addEventListener('beforeunload', () => this.saveDisplayState());
     window.addEventListener('pagehide', () => this.saveDisplayState());
 
-    // Phím tắt toàn màn hình tĩnh
+    // Phím tắt toàn màn hình & chuyển chế độ hiển thị
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'F11') {
+      // Phím số 1, 2, 3 để đổi chế độ hiển thị bảng
+      if (e.key === '1') {
+        this.setDisplayMode('single', true);
+      } else if (e.key === '2') {
+        this.setDisplayMode('dual', true);
+      } else if (e.key === '3') {
+        this.setDisplayMode('grid', true);
+      } else if (e.key === 'F11') {
         e.preventDefault();
         this.toggleFullscreen();
       } else if (e.key === 'Escape' && document.fullscreenElement) {

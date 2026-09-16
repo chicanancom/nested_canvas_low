@@ -68,6 +68,9 @@ export function startSyncServer(port = 8765) {
   // Active full canvas mirror for non-interactive PC display
   let lastCanvasScene = null;
   let lastCanvasCamera = null;
+  let lastCanvasPages = null;
+  let lastCanvasPageIndex = 0;
+  let lastDisplayMode = 'single';
 
   // Active session tracking across all clients
   let currentActiveSessionId = null;
@@ -86,6 +89,9 @@ export function startSyncServer(port = 8765) {
           lastCastCameraSync,
           lastCanvasScene,
           lastCanvasCamera,
+          lastCanvasPages,
+          lastCanvasPageIndex,
+          lastDisplayMode,
           currentActiveSessionId,
           boardStates: Array.from(boardStates.entries()),
           sharedBoards: Array.from(sharedBoards.entries()),
@@ -109,6 +115,9 @@ export function startSyncServer(port = 8765) {
         if (data.lastCastCameraSync) lastCastCameraSync = data.lastCastCameraSync;
         if (data.lastCanvasScene) lastCanvasScene = data.lastCanvasScene;
         if (data.lastCanvasCamera) lastCanvasCamera = data.lastCanvasCamera;
+        if (Array.isArray(data.lastCanvasPages)) lastCanvasPages = data.lastCanvasPages;
+        if (typeof data.lastCanvasPageIndex === 'number') lastCanvasPageIndex = data.lastCanvasPageIndex;
+        if (data.lastDisplayMode) lastDisplayMode = data.lastDisplayMode;
         if (data.currentActiveSessionId) currentActiveSessionId = data.currentActiveSessionId;
         if (Array.isArray(data.boardStates)) {
           for (const [k, v] of data.boardStates) boardStates.set(k, v);
@@ -360,6 +369,9 @@ export function startSyncServer(port = 8765) {
       last_cast_camera_sync: lastCastCameraSync,
       last_canvas_scene: lastCanvasScene,
       last_canvas_camera: lastCanvasCamera,
+      last_canvas_pages: lastCanvasPages,
+      last_canvas_page_index: lastCanvasPageIndex,
+      last_display_mode: lastDisplayMode,
     });
 
     broadcastGlobalPresence();
@@ -448,10 +460,53 @@ export function startSyncServer(port = 8765) {
         if (data.camera) {
           lastCanvasCamera = data.camera;
         }
+        if (Array.isArray(data.pages)) {
+          lastCanvasPages = data.pages;
+        }
+        if (typeof data.currentPageIndex === 'number') {
+          lastCanvasPageIndex = data.currentPageIndex;
+        }
+        if (data.displayMode) {
+          lastDisplayMode = data.displayMode;
+        }
         if (!data.isSingleBoardCast) {
           currentCastBoardId = null;
           currentCastBoardNode = null;
           lastCastCameraSync = null;
+        }
+        scheduleSaveState();
+        broadcastToAll(JSON.stringify(data), ws);
+        return;
+      }
+
+      // Fast-path Page Switch Protocol (Instant Relay <15ms)
+      if (type === 'PAGE_SWITCH') {
+        console.log(`[SyncServer] 📄 Page switched by ${clientIp} to page index ${data.currentPageIndex}`);
+        if (Array.isArray(data.pages)) {
+          lastCanvasPages = data.pages;
+        }
+        if (typeof data.currentPageIndex === 'number') {
+          lastCanvasPageIndex = data.currentPageIndex;
+        }
+        if (data.scene) {
+          lastCanvasScene = data.scene;
+        }
+        if (data.camera) {
+          lastCanvasCamera = data.camera;
+        }
+        if (data.displayMode) {
+          lastDisplayMode = data.displayMode;
+        }
+        scheduleSaveState();
+        broadcastToAll(JSON.stringify(data), ws);
+        return;
+      }
+
+      // Display Layout / Multi-Board Mode Selection Protocol
+      if (type === 'DISPLAY_MODE_SET') {
+        console.log(`[SyncServer] 🖥️ Display mode set to "${data.mode}" by ${clientIp}`);
+        if (data.mode) {
+          lastDisplayMode = data.mode;
         }
         scheduleSaveState();
         broadcastToAll(JSON.stringify(data), ws);
@@ -478,6 +533,8 @@ export function startSyncServer(port = 8765) {
       if (type === 'GET_CANVAS_MIRROR') {
         const sceneToSend = (currentActiveSessionContent && currentActiveSessionContent.scene) || lastCanvasScene;
         const cameraToSend = (currentActiveSessionContent && currentActiveSessionContent.camera) || lastCanvasCamera;
+        const pagesToSend = (currentActiveSessionContent && currentActiveSessionContent.pages) || lastCanvasPages;
+        const pageIndexToSend = (currentActiveSessionContent && typeof currentActiveSessionContent.currentPageIndex === 'number') ? currentActiveSessionContent.currentPageIndex : lastCanvasPageIndex;
         if (sceneToSend) {
           const rootNode = sceneToSend.root || sceneToSend;
           sendToWs(ws, {
@@ -486,6 +543,9 @@ export function startSyncServer(port = 8765) {
             camera: cameraToSend,
             theme: rootNode.style || 'chalkboard',
             gridType: rootNode.gridType || 'grid',
+            pages: pagesToSend,
+            currentPageIndex: pageIndexToSend,
+            displayMode: lastDisplayMode,
           });
         } else {
           // If no canvas mirror cached yet, request once from presenter

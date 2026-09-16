@@ -30,6 +30,7 @@ class NestedCanvasApp {
     // Multi-Page / Multi-Board presentation state
     this.pages = [];
     this.currentPageIndex = 0;
+    this.displayMode = 'single'; // 'single', 'dual', 'grid'
 
     this.canvas = document.getElementById('canvas');
     this.renderer = new CanvasRenderer(this.canvas);
@@ -493,6 +494,7 @@ class NestedCanvasApp {
     this.requestRender();
 
     if (this.syncClient && this.syncClient.isConnected) {
+      this.broadcastPageSwitch();
       this.broadcastCanvasMirror();
       this.broadcastCurrentCameraSync();
     }
@@ -628,6 +630,58 @@ class NestedCanvasApp {
       });
       listEl.appendChild(item);
     });
+    this.updateDisplayModeUI();
+  }
+
+  broadcastPageSwitch() {
+    if (!this.syncClient || !this.syncClient.isConnected) return;
+    const current = this.pages[this.currentPageIndex];
+    this.syncClient.send('PAGE_SWITCH', {
+      currentPageIndex: this.currentPageIndex,
+      pages: this.pages,
+      scene: this.scene.toJSON(),
+      theme: this.globalTheme || this.scene.root?.style || 'chalkboard',
+      gridType: this.globalGrid || this.scene.root?.gridType || 'grid',
+      camera: {
+        zoom: this.camera.zoom,
+        pan: { x: this.camera.pan.x, y: this.camera.pan.y },
+      },
+      displayMode: this.displayMode,
+      sendTime: Date.now(),
+    });
+    console.log(`[App] ⚡ Broadcast PAGE_SWITCH to index ${this.currentPageIndex}`);
+  }
+
+  setDisplayMode(mode, broadcast = true) {
+    if (!['single', 'dual', 'grid'].includes(mode)) return;
+    this.displayMode = mode;
+    this.updateDisplayModeUI();
+    const modeLabels = { single: '1 Bảng', dual: 'Ghép Đôi', grid: 'Lưới Tất Cả' };
+    this.showToast(`🖥️ Màn chiếu PC: ${modeLabels[mode] || mode}`);
+
+    if (broadcast && this.syncClient && this.syncClient.isConnected) {
+      this.syncClient.send('DISPLAY_MODE_SET', { mode });
+    }
+  }
+
+  updateDisplayModeUI() {
+    const btnSingle = document.getElementById('btn-disp-mode-single');
+    const btnDual = document.getElementById('btn-disp-mode-dual');
+    const btnGrid = document.getElementById('btn-disp-mode-grid');
+    const labelStatus = document.getElementById('label-disp-mode-status');
+
+    if (btnSingle) btnSingle.classList.toggle('active', this.displayMode === 'single');
+    if (btnDual) btnDual.classList.toggle('active', this.displayMode === 'dual');
+    if (btnGrid) btnGrid.classList.toggle('active', this.displayMode === 'grid');
+
+    const modeLabels = { single: '1 Bảng', dual: 'Ghép Đôi', grid: 'Lưới' };
+    if (labelStatus) labelStatus.textContent = modeLabels[this.displayMode] || this.displayMode;
+  }
+
+  cycleDisplayMode() {
+    const modes = ['single', 'dual', 'grid'];
+    const nextIdx = (modes.indexOf(this.displayMode) + 1) % modes.length;
+    this.setDisplayMode(modes[nextIdx], true);
   }
 
   initSessionUI() {
@@ -1389,6 +1443,39 @@ class NestedCanvasApp {
       btnDeletePage.addEventListener('click', (e) => {
         e.stopPropagation();
         this.deleteCurrentPage();
+      });
+    }
+
+    const btnPageDispMode = document.getElementById('btn-page-disp-mode');
+    const btnDispModeSingle = document.getElementById('btn-disp-mode-single');
+    const btnDispModeDual = document.getElementById('btn-disp-mode-dual');
+    const btnDispModeGrid = document.getElementById('btn-disp-mode-grid');
+
+    if (btnPageDispMode) {
+      btnPageDispMode.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.cycleDisplayMode();
+      });
+    }
+
+    if (btnDispModeSingle) {
+      btnDispModeSingle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.setDisplayMode('single', true);
+      });
+    }
+
+    if (btnDispModeDual) {
+      btnDispModeDual.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.setDisplayMode('dual', true);
+      });
+    }
+
+    if (btnDispModeGrid) {
+      btnDispModeGrid.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.setDisplayMode('grid', true);
       });
     }
 
@@ -2240,6 +2327,7 @@ class NestedCanvasApp {
               this.syncClient.send('CANVAS_STROKE_LIVE', {
                 clientId: `${this.clientId}_${e.pointerId}`,
                 session: strokeSession,
+                pageIndex: this.currentPageIndex,
                 sendTime: Date.now(),
               });
 
@@ -2459,11 +2547,13 @@ class NestedCanvasApp {
             nodeId: targetId,
             stroke: stroke.toJSON(),
             clientId: streamClientId,
+            pageIndex: this.currentPageIndex,
             sendTime: Date.now(),
           });
           this.syncClient.send('CANVAS_STROKE_LIVE', {
             clientId: streamClientId,
             session: null,
+            pageIndex: this.currentPageIndex,
           });
           if (sharedRoot) {
             this.syncClient.send('STROKE_ADD', {
@@ -5748,6 +5838,9 @@ class NestedCanvasApp {
         scene: this.scene.toJSON(),
         theme: currentTheme,
         gridType: currentGrid,
+        pages: this.pages,
+        currentPageIndex: this.currentPageIndex,
+        displayMode: this.displayMode,
         camera: {
           zoom: this.camera.zoom,
           pan: { x: this.camera.pan.x, y: this.camera.pan.y },
