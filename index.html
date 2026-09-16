@@ -67,20 +67,6 @@
           title="Có thay đổi chưa lưu"></span>
       </button>
 
-      <!-- Nút Mở Mục Lục Cây Phân Cấp (Đặc biệt hữu ích trên Điện Thoại) -->
-      <button id="btn-toggle-inspector" class="btn-action" style="color:#58a6ff; border-color:rgba(88,166,255,0.4);"
-        title="Mở danh mục cây phân cấp & thuộc tính bảng">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="8" y1="6" x2="21" y2="6"></line>
-          <line x1="8" y1="12" x2="21" y2="12"></line>
-          <line x1="8" y1="18" x2="21" y2="18"></line>
-          <line x1="3" y1="6" x2="3.01" y2="6"></line>
-          <line x1="3" y1="12" x2="3.01" y2="12"></line>
-          <line x1="3" y1="18" x2="3.01" y2="18"></line>
-        </svg>
-        <span class="desktop-only">Mục Lục</span>
-      </button>
-
       <div class="divider"></div>
 
       <!-- History Actions -->
@@ -315,72 +301,45 @@
       <button id="btn-hud-multipoint-toggle" class="hud-action-btn" title="Chuyển về cử chỉ chuẩn">Tắt</button>
     </div>
 
-    <!-- Right Hierarchy Inspector Sidebar -->
-    <aside class="glass-panel inspector-panel" id="inspector-panel">
-      <div class="panel-header">
-        <span>Đối Tượng (Ảnh & Đồ Thị)</span>
-        <div style="display: flex; align-items: center; gap: 4px;">
-          <button id="btn-close-inspector" class="btn-icon-sm mobile-only" title="Đóng mục lục"
-            style="font-size: 14px; margin-left: 4px;">✕</button>
+    <!-- Bảng Chỉnh Sửa Hàm Số Đồ Thị Nổi (Chỉ hiện khi bấm chọn đồ thị) -->
+    <div id="graph-expressions-section" class="glass-panel"
+      style="display: none; position: absolute; top: 76px; right: 20px; width: 300px; z-index: 50; flex-direction: column; gap: 8px; padding: 14px; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.5);">
+      <div class="panel-header" style="color: #58a6ff; display:flex; justify-content:space-between; align-items:center;">
+        <span>📊 Hàm Số Đồ Thị</span>
+        <div style="display: flex; align-items:center; gap: 4px;">
+          <button id="btn-add-ocr-expr"
+            style="background: rgba(88,166,255,0.25); border: 1px solid #58a6ff; color: #58a6ff; border-radius: 4px; padding: 2px 6px; font-size: 11px; cursor: pointer; font-weight: 500;"
+            title="Mở bảng viết tay nhận dạng công thức">+ ✍️ Viết Tay</button>
+          <button id="btn-add-expr"
+            style="background: #21262d; border: 1px solid var(--border-subtle); color: #c9d1d9; border-radius: 4px; padding: 2px 6px; font-size: 11px; cursor: pointer;">+
+            Thêm</button>
+          <button id="btn-close-graph-panel" class="btn-icon-sm" title="Đóng bảng hàm số" style="margin-left:4px;">✕</button>
         </div>
       </div>
-      <div class="tree-list" id="tree-list"></div>
-
-      <!-- Phần Chỉnh Sửa Hàm Số Đồ Thị (Tách riêng biệt, luôn tự động hiện khi chọn Đồ Thị) -->
-      <div id="graph-expressions-section"
-        style="display: none; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px; margin-bottom: 4px;">
-        <div class="panel-header" style="color: #58a6ff;">
-          <span>📊 Hàm Số Đồ Thị</span>
-          <div style="display: flex; gap: 4px;">
-            <button id="btn-add-ocr-expr"
-              style="background: rgba(88,166,255,0.25); border: 1px solid #58a6ff; color: #58a6ff; border-radius: 4px; padding: 2px 6px; font-size: 11px; cursor: pointer; font-weight: 500;"
-              title="Mở bảng viết tay nhận dạng công thức">+ ✍️ Viết Tay</button>
-            <button id="btn-add-expr"
-              style="background: #21262d; border: 1px solid var(--border-subtle); color: #c9d1d9; border-radius: 4px; padding: 2px 6px; font-size: 11px; cursor: pointer;">+
-              Thêm</button>
-          </div>
-        </div>
-        <div id="graph-expr-list"
-          style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto;"></div>
-        <!-- Presets Nhanh -->
-        <div style="margin-top: 2px;">
-          <span style="font-size: 10px; color: var(--text-muted);">Mẫu Đồ Thị Nhanh:</span>
-          <div id="graph-presets-container" style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;">
-            <button class="preset-btn" data-expr="sin(x)"
-              style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">sin(x)</button>
-            <button class="preset-btn" data-expr="cos(x)"
-              style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">cos(x)</button>
-            <button class="preset-btn" data-expr="x^2 - 4"
-              style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">Parabol
-              x²-4</button>
-            <button class="preset-btn" data-expr="1/x"
-              style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">1/x</button>
-            <button class="preset-btn" data-expr="0.1*x^3 - x"
-              style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">Bậc
-              3</button>
-            <button class="preset-btn" data-expr="2^x"
-              style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">Mũ
-              2^x</button>
-          </div>
+      <div id="graph-expr-list"
+        style="display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto;"></div>
+      <!-- Presets Nhanh -->
+      <div style="margin-top: 2px;">
+        <span style="font-size: 10px; color: var(--text-muted);">Mẫu Đồ Thị Nhanh:</span>
+        <div id="graph-presets-container" style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;">
+          <button class="preset-btn" data-expr="sin(x)"
+            style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">sin(x)</button>
+          <button class="preset-btn" data-expr="cos(x)"
+            style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">cos(x)</button>
+          <button class="preset-btn" data-expr="x^2 - 4"
+            style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">Parabol
+            x²-4</button>
+          <button class="preset-btn" data-expr="1/x"
+            style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">1/x</button>
+          <button class="preset-btn" data-expr="0.1*x^3 - x"
+            style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">Bậc
+            3</button>
+          <button class="preset-btn" data-expr="2^x"
+            style="background:#21262d; border:1px solid var(--border-subtle); color:#c9d1d9; border-radius:4px; padding:2px 6px; font-size:10px; cursor:pointer;">Mũ
+            2^x</button>
         </div>
       </div>
-
-      <div class="panel-header collapsible" id="header-canvas-properties" title="Bấm để mở rộng / thu gọn thuộc tính">
-        <div style="display: flex; align-items: center; gap: 6px;">
-          <svg id="arrow-canvas-properties" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            stroke-width="2.5"
-            style="transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1); transform: rotate(-90deg);">
-            <path d="M6 9l6 6 6-6" />
-          </svg>
-          <span>Canvas Properties</span>
-        </div>
-        <span id="badge-canvas-properties"
-          style="font-size: 10px; font-weight: normal; color: #58a6ff; text-transform: none;"></span>
-      </div>
-      <div id="node-properties" style="font-size: 12px; color: var(--text-muted); display: none; margin-top: 4px;">
-        Nhấp vào một bảng để chỉnh sửa thuộc tính.
-      </div>
-    </aside>
+    </div>
 
     <!-- Bottom-Right HUD: Page Navigation & Zoom HUD -->
     <div class="bottom-right-hud">

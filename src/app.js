@@ -1284,34 +1284,15 @@ class NestedCanvasApp {
       }
     });
 
-    // Điều khiển mở / đóng Drawer Cây phân cấp trên thiết bị di động
-    const btnToggleInspector = document.getElementById('btn-toggle-inspector');
-    const btnCloseInspector = document.getElementById('btn-close-inspector');
-    const inspectorPanel = document.getElementById('inspector-panel');
-
-    if (btnToggleInspector && inspectorPanel) {
-      btnToggleInspector.addEventListener('click', (e) => {
+    // Đóng bảng hàm số đồ thị nổi khi bấm ✕
+    const btnCloseGraphPanel = document.getElementById('btn-close-graph-panel');
+    const graphSection = document.getElementById('graph-expressions-section');
+    if (btnCloseGraphPanel && graphSection) {
+      btnCloseGraphPanel.addEventListener('click', (e) => {
         e.stopPropagation();
-        const isOpen = inspectorPanel.classList.toggle('mobile-open');
-        btnToggleInspector.classList.toggle('active', isOpen);
+        graphSection.style.display = 'none';
       });
     }
-
-    if (btnCloseInspector && inspectorPanel) {
-      btnCloseInspector.addEventListener('click', (e) => {
-        e.stopPropagation();
-        inspectorPanel.classList.remove('mobile-open');
-        btnToggleInspector?.classList.remove('active');
-      });
-    }
-
-    // Khi chạm vào canvas trên điện thoại, tự động ẩn Drawer mục lục
-    this.canvas.addEventListener('pointerdown', () => {
-      if (window.innerWidth <= 768 && inspectorPanel?.classList.contains('mobile-open')) {
-        inspectorPanel.classList.remove('mobile-open');
-        btnToggleInspector?.classList.remove('active');
-      }
-    });
 
     // Tool buttons
     document.querySelectorAll('.tool-btn[data-tool]').forEach((btn) => {
@@ -3093,9 +3074,6 @@ class NestedCanvasApp {
   openGraphEditor(node) {
     if (!node) return;
     this.selectedNodeId = node.id;
-    const inspector = document.getElementById('inspector-panel');
-    if (inspector) inspector.classList.add('open');
-    this.updateHierarchyTree();
     this.updateGraphExpressions(node);
   }
 

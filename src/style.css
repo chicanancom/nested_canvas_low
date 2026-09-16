@@ -1812,26 +1812,14 @@ html, body, #app, .canvas-container, canvas {
     min-width: 34px;
   }
 
-  /* 5. CÂY PHÂN CẤP INSPECTOR TRỞ THÀNH DRAWER TRÊN ĐIỆN THOẠI */
-  .inspector-panel {
-    position: fixed;
-    top: 52px;
-    right: 8px;
-    bottom: 56px;
-    width: min(320px, calc(100vw - 20px));
-    max-height: none;
-    border-radius: 14px;
-    z-index: 1000;
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.85);
-    transform: translateX(120%);
-    opacity: 0;
-    pointer-events: none;
-    transition: transform 0.25s ease, opacity 0.25s ease;
-  }
-  .inspector-panel.mobile-open {
-    transform: translateX(0);
-    opacity: 1;
-    pointer-events: auto;
+  /* 5. BẢNG HÀM SỐ ĐỒ THỊ TRÊN ĐIỆN THOẠI */
+  #graph-expressions-section {
+    position: fixed !important;
+    top: 56px !important;
+    right: 10px !important;
+    width: min(340px, calc(100vw - 20px)) !important;
+    max-height: calc(100vh - 120px) !important;
+    z-index: 1000 !important;
   }
 
   /* 6. CÁC MODAL HỘP THOẠI TRÊN ĐIỆN THOẠI */
