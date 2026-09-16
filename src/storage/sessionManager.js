@@ -109,6 +109,15 @@ export class SessionManager {
       camera,
       boardCounter,
       selectedNodeId,
+      pages: [{
+        id: `page_${now}_1`,
+        name: 'Trang 1',
+        scene: migratedScene || { root: { children: [], strokes: [], images: [] } },
+        camera,
+        theme: 'chalkboard',
+        gridType: 'grid',
+      }],
+      currentPageIndex: 0,
     };
 
     await db.saveSession(meta, content);
@@ -144,6 +153,15 @@ export class SessionManager {
       camera: { zoom: 1, pan: { x: 0, y: 0 } },
       boardCounter: 0,
       selectedNodeId: null,
+      pages: [{
+        id: `page_${now}_1`,
+        name: 'Trang 1',
+        scene: { root: { id: 'root', type: 'root', children: [], strokes: [], images: [] } },
+        camera: { zoom: 1, pan: { x: 0, y: 0 } },
+        theme: 'chalkboard',
+        gridType: 'grid',
+      }],
+      currentPageIndex: 0,
     };
 
     await db.saveSession(meta, content);
@@ -273,13 +291,15 @@ export class SessionManager {
    * Tự động lưu ngầm vào IndexedDB (Debounced 1500ms khi người dùng ngừng vẽ)
    * Ghi đè trực tiếp vào bản ghi sessionId hiện tại trong DB cục bộ
    */
-  scheduleAutoSave(scene, camera, boardCounter, selectedNodeId, currentCastBoardId = null) {
+  scheduleAutoSave(scene, camera, boardCounter, selectedNodeId, currentCastBoardId = null, pages = null, currentPageIndex = 0) {
     this.pendingSaveArgs = {
       scene: scene ? scene.toJSON() : null,
       camera: camera ? { zoom: camera.zoom, pan: { x: camera.pan.x, y: camera.pan.y } } : null,
       boardCounter,
       selectedNodeId,
       currentCastBoardId,
+      pages,
+      currentPageIndex,
     };
 
     if (this.autoSaveTimer) {
@@ -295,7 +315,7 @@ export class SessionManager {
   /**
    * Lưu phiên làm việc thủ công (Explicit Manual Save)
    */
-  async saveCurrentSession(scene, camera, boardCounter, selectedNodeId, currentCastBoardId = null) {
+  async saveCurrentSession(scene, camera, boardCounter, selectedNodeId, currentCastBoardId = null, pages = null, currentPageIndex = 0) {
     if (!this.currentSessionId) return null;
     this.pendingSaveArgs = {
       scene: scene ? scene.toJSON() : null,
@@ -303,6 +323,8 @@ export class SessionManager {
       boardCounter,
       selectedNodeId,
       currentCastBoardId,
+      pages,
+      currentPageIndex,
     };
     await this._performSave();
     return this.currentSessionMeta;
@@ -357,6 +379,8 @@ export class SessionManager {
         boardCounter: args.boardCounter || 0,
         selectedNodeId: args.selectedNodeId || null,
         currentCastBoardId: args.currentCastBoardId || null,
+        pages: args.pages || null,
+        currentPageIndex: args.currentPageIndex || 0,
         savedAt: now,
       };
 
@@ -625,7 +649,25 @@ export class SessionManager {
       await this.flushSave();
     }
     const session = await db.getFullSession(sessionId);
-    if (!session || !session.content?.scene?.root) return [];
+    if (!session || !session.content) return [];
+
+    if (session.content.pages && Array.isArray(session.content.pages) && session.content.pages.length > 0) {
+      const allBoards = [];
+      session.content.pages.forEach((page, pIdx) => {
+        if (page.scene?.root) {
+          const hierarchy = this._analyzeHierarchy(page.scene.root);
+          hierarchy.flatBoards.forEach((b) => {
+            if (b.isRoot) {
+              b.name = page.name || `Trang ${pIdx + 1}`;
+            }
+            allBoards.push(b);
+          });
+        }
+      });
+      return allBoards;
+    }
+
+    if (!session.content?.scene?.root) return [];
     const hierarchy = this._analyzeHierarchy(session.content.scene.root);
     return hierarchy.flatBoards;
   }
@@ -716,15 +758,29 @@ export class SessionManager {
       await this.flushSave();
     }
     const session = await db.getFullSession(sessionId);
-    if (!session || !session.content?.scene?.root) return false;
+    if (!session || !session.content) return false;
 
-    const sceneRoot = session.content.scene.root;
-    const hierarchy = this._analyzeHierarchy(sceneRoot);
+    // Xác định danh sách bảng cần xuất (từ các trang hoặc scene chính)
+    let targetBoards = [];
+    if (session.content.pages && Array.isArray(session.content.pages) && session.content.pages.length > 0) {
+      session.content.pages.forEach((page, pIdx) => {
+        if (page.scene?.root) {
+          const hierarchy = this._analyzeHierarchy(page.scene.root);
+          hierarchy.flatBoards.forEach((b) => {
+            if (b.isRoot) {
+              b.name = page.name || `Trang ${pIdx + 1}`;
+            }
+            targetBoards.push(b);
+          });
+        }
+      });
+    } else if (session.content.scene?.root) {
+      const hierarchy = this._analyzeHierarchy(session.content.scene.root);
+      targetBoards = hierarchy.flatBoards;
+    }
 
-    // Xác định danh sách bảng cần xuất
-    let targetBoards = hierarchy.flatBoards;
     if (Array.isArray(selectedBoardIds) && selectedBoardIds.length > 0) {
-      targetBoards = hierarchy.flatBoards.filter((b) => selectedBoardIds.includes(b.id));
+      targetBoards = targetBoards.filter((b) => selectedBoardIds.includes(b.id));
     }
 
     if (targetBoards.length === 0) {

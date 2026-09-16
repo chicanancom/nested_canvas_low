@@ -382,8 +382,30 @@
       </div>
     </aside>
 
-    <!-- Bottom-Right Zoom HUD -->
+    <!-- Bottom-Right HUD: Page Navigation & Zoom HUD -->
     <div class="bottom-right-hud">
+      <!-- Thanh Điều Hướng Trang / Bảng Phụ (Page Navigation Bar) -->
+      <div class="glass-panel page-controls" id="page-controls" style="display:flex; align-items:center; gap:4px; padding:4px 8px; border-radius:10px;">
+        <button id="btn-page-prev" class="zoom-btn" title="Trang trước (PageUp / [)" style="font-size:11px;">◀</button>
+        <span id="page-indicator" class="zoom-val" style="min-width:76px; font-weight:600; font-size:12px; color:#58a6ff; cursor:pointer;" title="Bấm để xem danh sách trang hoặc xóa trang">Trang 1 / 1</span>
+        <button id="btn-page-next" class="zoom-btn" title="Trang sau (PageDown / ])" style="font-size:11px;">▶</button>
+        <div class="divider" style="height:14px; margin:0 2px;"></div>
+        <button id="btn-page-add" class="zoom-btn" title="Thêm bảng / trang mới (+)" style="font-size:17px; color:#3fb950; font-weight:bold;">+</button>
+      </div>
+
+      <!-- Popover Menu Trang (Hiện khi bấm vào nhãn trang) -->
+      <div id="popover-page-menu" class="glass-panel" style="display:none; position:absolute; bottom:calc(100% + 8px); right:0; width:220px; z-index:9999; padding:10px; border-radius:10px; box-shadow:0 12px 32px rgba(0,0,0,0.6); border:1px solid rgba(255,255,255,0.15); backdrop-filter:blur(16px); background:rgba(15, 23, 42, 0.94); flex-direction:column; gap:8px;">
+        <div style="font-size:11px; font-weight:700; color:#f0f6fc; display:flex; justify-content:space-between; align-items:center;">
+          <span>📑 Danh Sách Trang</span>
+          <button id="btn-close-page-menu" class="btn-icon-sm" style="font-size:11px;">✕</button>
+        </div>
+        <div id="page-list-items" style="display:flex; flex-direction:column; gap:4px; max-height:160px; overflow-y:auto;"></div>
+        <div style="display:flex; gap:4px; border-top:1px solid var(--border-subtle); padding-top:6px;">
+          <button id="btn-duplicate-page" class="btn-action" style="flex:1; padding:4px; font-size:10.5px; justify-content:center;" title="Nhân đôi trang hiện tại">📄 Nhân Đôi</button>
+          <button id="btn-delete-page" class="btn-action danger" style="padding:4px 8px; font-size:10.5px;" title="Xóa trang hiện tại">🗑️</button>
+        </div>
+      </div>
+
       <div class="glass-panel zoom-controls">
         <button id="btn-zoom-out" class="zoom-btn" title="Zoom Out (-)">−</button>
         <span id="zoom-value" class="zoom-val" title="Reset Zoom (0)">100%</span>

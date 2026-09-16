@@ -27,6 +27,10 @@ class NestedCanvasApp {
     this.sessionManager = null;
     this.hasUnsavedChanges = false;
 
+    // Multi-Page / Multi-Board presentation state
+    this.pages = [];
+    this.currentPageIndex = 0;
+
     this.canvas = document.getElementById('canvas');
     this.renderer = new CanvasRenderer(this.canvas);
     this.scene = new SceneGraph();
@@ -158,12 +162,15 @@ class NestedCanvasApp {
   scheduleContentSave() {
     this.markUnsavedChanges();
     if (this.sessionManager) {
+      this.saveCurrentPage();
       this.sessionManager.scheduleAutoSave(
         this.scene,
         this.camera,
         this.boardCounter || 0,
         this.selectedNodeId,
-        this.syncClient?.currentCastBoardId || null
+        this.syncClient?.currentCastBoardId || null,
+        this.pages,
+        this.currentPageIndex
       );
     }
   }
@@ -188,12 +195,15 @@ class NestedCanvasApp {
           }));
         }
       } else if (this.sessionManager) {
+        this.saveCurrentPage();
         await this.sessionManager.saveCurrentSession(
           this.scene,
           this.camera,
           this.boardCounter || 0,
           this.selectedNodeId,
-          this.syncClient?.currentCastBoardId || null
+          this.syncClient?.currentCastBoardId || null,
+          this.pages,
+          this.currentPageIndex
         );
       }
 
@@ -348,6 +358,29 @@ class NestedCanvasApp {
   applySessionContent(content) {
     if (!content) return;
     try {
+      if (content.pages && Array.isArray(content.pages) && content.pages.length > 0) {
+        this.pages = content.pages;
+        let idx = typeof content.currentPageIndex === 'number' ? content.currentPageIndex : 0;
+        if (idx < 0 || idx >= this.pages.length) idx = 0;
+        this.currentPageIndex = idx;
+        const p = this.pages[idx];
+        if (p && p.scene) {
+          content.scene = p.scene;
+          if (p.camera) content.camera = p.camera;
+        }
+      } else {
+        this.pages = [{
+          id: `page_${Date.now()}_1`,
+          name: 'Trang 1',
+          scene: content.scene || this.scene.toJSON(),
+          camera: content.camera || { zoom: this.camera.zoom, pan: { x: this.camera.pan.x, y: this.camera.pan.y } },
+          theme: content.scene?.root?.style || this.globalTheme || 'chalkboard',
+          gridType: content.scene?.root?.gridType || this.globalGrid || 'grid',
+        }];
+        this.currentPageIndex = 0;
+      }
+      this.updatePageIndicator();
+
       if (content.scene && content.scene.root) {
         this.scene.loadFromJSON(content.scene);
         this.globalTheme = this.scene.root.style || 'chalkboard';
@@ -391,6 +424,210 @@ class NestedCanvasApp {
       label.textContent = meta.name || 'Phiên làm việc';
       label.title = `Phiên hiện tại: ${meta.name}`;
     }
+  }
+
+  /* ==========================================================================
+     Multi-Page / Multi-Board Presentation System
+     ========================================================================== */
+
+  saveCurrentPage() {
+    if (!this.pages || this.pages.length === 0) {
+      this.pages = [{
+        id: `page_${Date.now()}_1`,
+        name: 'Trang 1',
+        scene: this.scene.toJSON(),
+        camera: { zoom: this.camera.zoom, pan: { x: this.camera.pan.x, y: this.camera.pan.y } },
+        theme: this.globalTheme || this.scene.root?.style || 'chalkboard',
+        gridType: this.globalGrid || this.scene.root?.gridType || 'grid',
+      }];
+      this.currentPageIndex = 0;
+      return;
+    }
+    if (this.currentPageIndex < 0 || this.currentPageIndex >= this.pages.length) {
+      this.currentPageIndex = 0;
+    }
+    const current = this.pages[this.currentPageIndex];
+    if (current) {
+      current.scene = this.scene.toJSON();
+      current.camera = { zoom: this.camera.zoom, pan: { x: this.camera.pan.x, y: this.camera.pan.y } };
+      current.theme = this.globalTheme || this.scene.root?.style || 'chalkboard';
+      current.gridType = this.globalGrid || this.scene.root?.gridType || 'grid';
+    }
+  }
+
+  loadPage(index) {
+    if (!this.pages || this.pages.length === 0) return;
+    if (index < 0) index = 0;
+    if (index >= this.pages.length) index = this.pages.length - 1;
+    this.currentPageIndex = index;
+    const page = this.pages[index];
+    if (!page) return;
+
+    if (page.scene) {
+      this.scene.loadFromJSON(page.scene);
+      if (page.theme) {
+        this.globalTheme = page.theme;
+        if (this.scene.root) this.scene.root.style = page.theme;
+      }
+      if (page.gridType) {
+        this.globalGrid = page.gridType;
+        if (this.scene.root) this.scene.root.gridType = page.gridType;
+      }
+      if (this.renderThemeMenu) this.renderThemeMenu();
+    }
+    if (page.camera) {
+      if (typeof page.camera.zoom === 'number' && page.camera.zoom > 0) {
+        this.camera.zoom = page.camera.zoom;
+      }
+      if (page.camera.pan && typeof page.camera.pan.x === 'number') {
+        this.camera.pan = new Vec2(page.camera.pan.x, page.camera.pan.y);
+      }
+    }
+
+    this.history.clear();
+    this.selectedNodeId = null;
+    this.updateZoomHUD();
+    this.updatePageIndicator();
+    this.updateHierarchyTree();
+    this.updateUI();
+    this.requestRender();
+
+    if (this.syncClient && this.syncClient.isConnected) {
+      this.broadcastCanvasMirror();
+      this.broadcastCurrentCameraSync();
+    }
+  }
+
+  switchToPage(index) {
+    if (index === this.currentPageIndex || index < 0 || index >= this.pages.length) return;
+    this.saveCurrentPage();
+    this.loadPage(index);
+    this.scheduleContentSave();
+  }
+
+  addNewPage() {
+    this.saveCurrentPage();
+    const newPageNum = this.pages.length + 1;
+    const newPageId = `page_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const blankScene = {
+      root: {
+        id: 'root',
+        type: 'root',
+        children: [],
+        strokes: [],
+        images: [],
+        style: this.globalTheme || 'chalkboard',
+        gridType: this.globalGrid || 'grid',
+      }
+    };
+    const newPage = {
+      id: newPageId,
+      name: `Trang ${newPageNum}`,
+      scene: blankScene,
+      camera: { zoom: 1.0, pan: { x: 0, y: 0 } },
+      theme: this.globalTheme || 'chalkboard',
+      gridType: this.globalGrid || 'grid',
+    };
+    this.pages.push(newPage);
+    this.loadPage(this.pages.length - 1);
+    this.scheduleContentSave();
+    this.showToast(`✨ Đã tạo Trang ${this.pages.length}`);
+  }
+
+  duplicateCurrentPage() {
+    this.saveCurrentPage();
+    const current = this.pages[this.currentPageIndex];
+    if (!current) return;
+    const newPageNum = this.pages.length + 1;
+    const newPageId = `page_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const clonedScene = JSON.parse(JSON.stringify(current.scene));
+    const newPage = {
+      id: newPageId,
+      name: `${current.name || `Trang ${this.currentPageIndex + 1}`} (Bản sao)`,
+      scene: clonedScene,
+      camera: { ...current.camera },
+      theme: current.theme || this.globalTheme || 'chalkboard',
+      gridType: current.gridType || this.globalGrid || 'grid',
+    };
+    this.pages.splice(this.currentPageIndex + 1, 0, newPage);
+    this.loadPage(this.currentPageIndex + 1);
+    this.scheduleContentSave();
+    this.showToast(`📄 Đã nhân đôi trang`);
+    this.closePageMenuPopover();
+  }
+
+  deleteCurrentPage() {
+    if (this.pages.length <= 1) {
+      this.showToast('⚠️ Không thể xóa khi chỉ còn 1 trang!');
+      return;
+    }
+    const pageName = this.pages[this.currentPageIndex]?.name || `Trang ${this.currentPageIndex + 1}`;
+    if (!confirm(`Bạn có chắc muốn xóa "${pageName}" không?`)) {
+      return;
+    }
+    this.pages.splice(this.currentPageIndex, 1);
+    if (this.currentPageIndex >= this.pages.length) {
+      this.currentPageIndex = this.pages.length - 1;
+    }
+    this.loadPage(this.currentPageIndex);
+    this.scheduleContentSave();
+    this.showToast(`🗑️ Đã xóa trang`);
+    this.closePageMenuPopover();
+  }
+
+  updatePageIndicator() {
+    const indicator = document.getElementById('page-indicator');
+    const btnPrev = document.getElementById('btn-page-prev');
+    const btnNext = document.getElementById('btn-page-next');
+    const total = (this.pages && this.pages.length > 0) ? this.pages.length : 1;
+    const current = (this.currentPageIndex >= 0 && this.currentPageIndex < total) ? (this.currentPageIndex + 1) : 1;
+
+    if (indicator) {
+      indicator.textContent = `Trang ${current} / ${total}`;
+    }
+    if (btnPrev) {
+      btnPrev.disabled = (this.currentPageIndex <= 0);
+    }
+    if (btnNext) {
+      btnNext.disabled = (this.currentPageIndex >= total - 1);
+    }
+  }
+
+  togglePageMenuPopover() {
+    const popover = document.getElementById('popover-page-menu');
+    if (!popover) return;
+    const isOpen = popover.style.display === 'flex';
+    if (isOpen) {
+      this.closePageMenuPopover();
+    } else {
+      this.renderPageListPopover();
+      popover.style.display = 'flex';
+    }
+  }
+
+  closePageMenuPopover() {
+    const popover = document.getElementById('popover-page-menu');
+    if (popover) popover.style.display = 'none';
+  }
+
+  renderPageListPopover() {
+    const listEl = document.getElementById('page-list-items');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    this.pages.forEach((p, idx) => {
+      const item = document.createElement('button');
+      item.className = `page-item-btn ${idx === this.currentPageIndex ? 'active' : ''}`;
+      const strokeCount = (p.scene?.root?.strokes?.length || 0) + (p.scene?.root?.elements?.length || 0);
+      item.innerHTML = `
+        <span style="font-weight:600;">${p.name || `Trang ${idx + 1}`}</span>
+        <span style="font-size:10px; opacity:0.6;">${strokeCount} nét</span>
+      `;
+      item.addEventListener('click', () => {
+        this.switchToPage(idx);
+        this.closePageMenuPopover();
+      });
+      listEl.appendChild(item);
+    });
   }
 
   initSessionUI() {
@@ -1113,6 +1350,74 @@ class NestedCanvasApp {
     sizeSlider.addEventListener('input', (e) => {
       this.brushSize = parseFloat(e.target.value);
       sizeLabel.textContent = `${this.brushSize.toFixed(1)} px`;
+    });
+
+    // Multi-Page Navigation Bar & Popover Events
+    const btnPagePrev = document.getElementById('btn-page-prev');
+    const btnPageNext = document.getElementById('btn-page-next');
+    const btnPageAdd = document.getElementById('btn-page-add');
+    const pageIndicator = document.getElementById('page-indicator');
+    const btnClosePageMenu = document.getElementById('btn-close-page-menu');
+    const btnDuplicatePage = document.getElementById('btn-duplicate-page');
+    const btnDeletePage = document.getElementById('btn-delete-page');
+
+    if (btnPagePrev) {
+      btnPagePrev.addEventListener('click', () => {
+        if (this.currentPageIndex > 0) {
+          this.switchToPage(this.currentPageIndex - 1);
+        }
+      });
+    }
+
+    if (btnPageNext) {
+      btnPageNext.addEventListener('click', () => {
+        if (this.currentPageIndex < this.pages.length - 1) {
+          this.switchToPage(this.currentPageIndex + 1);
+        }
+      });
+    }
+
+    if (btnPageAdd) {
+      btnPageAdd.addEventListener('click', () => {
+        this.addNewPage();
+      });
+    }
+
+    if (pageIndicator) {
+      pageIndicator.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.togglePageMenuPopover();
+      });
+    }
+
+    if (btnClosePageMenu) {
+      btnClosePageMenu.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.closePageMenuPopover();
+      });
+    }
+
+    if (btnDuplicatePage) {
+      btnDuplicatePage.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.duplicateCurrentPage();
+      });
+    }
+
+    if (btnDeletePage) {
+      btnDeletePage.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.deleteCurrentPage();
+      });
+    }
+
+    window.addEventListener('click', (e) => {
+      const popover = document.getElementById('popover-page-menu');
+      if (popover && popover.style.display === 'flex') {
+        if (!popover.contains(e.target) && e.target !== pageIndicator) {
+          this.closePageMenuPopover();
+        }
+      }
     });
 
     // Zoom buttons
@@ -2606,6 +2911,16 @@ class NestedCanvasApp {
       e.preventDefault();
     } else if (e.key === '0') {
       this.fitAllContent();
+    } else if (e.key === 'PageUp' || (e.key === '[' && !e.ctrlKey && !e.metaKey && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA')) {
+      if (this.currentPageIndex > 0) {
+        this.switchToPage(this.currentPageIndex - 1);
+        e.preventDefault();
+      }
+    } else if (e.key === 'PageDown' || (e.key === ']' && !e.ctrlKey && !e.metaKey && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA')) {
+      if (this.currentPageIndex < this.pages.length - 1) {
+        this.switchToPage(this.currentPageIndex + 1);
+        e.preventDefault();
+      }
     }
   }
 
