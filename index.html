@@ -99,14 +99,7 @@
 
       <div class="divider"></div>
 
-      <!-- Presets & Actions -->
-      <button id="btn-add-sample" class="btn-action" title="Thêm bảng học tập mới">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 5v14M5 12h14" />
-        </svg>
-        Thêm Bảng
-      </button>
-
+      <!-- Presets & Actions: Đồ Thị & Ảnh -->
       <button id="btn-add-desmos" class="btn-action" style="color:#58a6ff; border-color:rgba(88,166,255,0.4);"
         title="Thêm bảng vẽ đồ thị toán học">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2">
@@ -114,17 +107,6 @@
           <path d="M19 9l-5 5-4-4-3 3" />
         </svg>
         Đồ Thị
-      </button>
-
-      <button id="btn-top-focus" class="btn-action"
-        style="display:none; color:#d2a8ff; border-color:rgba(188,140,255,0.4); background:rgba(188,140,255,0.12); font-weight:600;"
-        title="Chế độ tập trung edit bảng này (Không ảnh hưởng bố cục bảng chính) (F)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="9" />
-          <circle cx="12" cy="12" r="4" />
-          <circle cx="12" cy="12" r="1" fill="currentColor" />
-        </svg>
-        🎯 Tập Trung
       </button>
 
       <button id="btn-insert-image" class="btn-action" title="Chèn ảnh vào bảng hoặc canvas (hoặc dán Ctrl+V)">
@@ -209,30 +191,6 @@
       </div>
     </header>
 
-    <!-- Focus Mode Floating Overlay Bar (Hiển thị khi đang ở Chế Độ Tập Trung) -->
-    <div id="focus-mode-bar" class="glass-panel focus-mode-bar" style="display: none;">
-      <div class="focus-mode-left">
-        <span class="focus-mode-badge">🎯 CHẾ ĐỘ TẬP TRUNG</span>
-        <span id="focus-mode-board-title" class="focus-mode-title">Đang sửa bảng: ...</span>
-      </div>
-      <div class="focus-mode-center">
-        <span class="focus-mode-hint">💡 Bố cục bảng chính được bảo toàn tuyệt đối 100%</span>
-      </div>
-      <div class="focus-mode-right">
-        <button id="btn-focus-toggle-display" class="btn-focus-sync"
-          title="Đồng bộ góc nhìn sang Màn Chiếu PC (Mặc định: Tắt để giữ nguyên toàn cảnh bố cục màn chiếu)">
-          <span id="focus-sync-dot" class="focus-sync-dot"></span>
-          <span id="focus-sync-text">Màn Chiếu: Giữ Toàn Cảnh</span>
-        </button>
-        <button id="btn-exit-focus-mode" class="btn-focus-exit"
-          title="Thoát chế độ tập trung và quay về bố cục bảng chính (Esc)">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <path d="M18 6L6 18M6 6l12 12" />
-          </svg>
-          Quay Lại Bảng Chính
-        </button>
-      </div>
-    </div>
 
     <!-- Left Floating Tool Palette -->
     <aside class="glass-panel left-toolbar">
@@ -360,13 +318,8 @@
     <!-- Right Hierarchy Inspector Sidebar -->
     <aside class="glass-panel inspector-panel" id="inspector-panel">
       <div class="panel-header">
-        <span>Hierarchy Tree</span>
+        <span>Đối Tượng (Ảnh & Đồ Thị)</span>
         <div style="display: flex; align-items: center; gap: 4px;">
-          <button id="btn-new-child-canvas" class="btn-icon-sm" title="Add Child Canvas">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-          </button>
           <button id="btn-close-inspector" class="btn-icon-sm mobile-only" title="Đóng mục lục"
             style="font-size: 14px; margin-left: 4px;">✕</button>
         </div>
@@ -710,117 +663,6 @@
       </div>
     </div>
 
-    <!-- Modal Lobby Dành Cho Thiết Bị Ngoài Vào Trực Tiếp URL Gốc (Tránh Lộ Bảng Mẹ) -->
-    <div class="math-ocr-modal" id="modal-remote-lobby"
-      style="display:none; align-items:center; justify-content:center;">
-      <div class="glass-panel"
-        style="width: 440px; max-width: 95vw; padding: 26px; border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,0.8); border: 1px solid rgba(88,166,255,0.3); backdrop-filter: blur(24px); background: rgba(13, 17, 23, 0.98); display: flex; flex-direction: column; gap: 16px;">
-        <div
-          style="display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px;">
-          <span style="font-size: 26px;">🏫</span>
-          <div>
-            <div style="font-weight: 700; font-size: 16px; color: #58a6ff;">Phòng Học Trực Tuyến LAN</div>
-            <div style="font-size: 12px; color: var(--text-muted);">Vào bảng con để học tập và vẽ cùng thầy cô</div>
-          </div>
-        </div>
-
-        <div
-          style="background: rgba(88,166,255,0.08); border-left: 3px solid #58a6ff; padding: 10px 12px; border-radius: 6px; font-size: 12px; color: #c9d1d9; line-height: 1.5;">
-          🔒 <b>Không gian Bảng Mẹ được bảo mật riêng tư.</b> Vui lòng chọn một Bảng Con thầy cô đang chia sẻ bên dưới
-          để tham gia:
-        </div>
-
-        <div id="remote-lobby-boards-container" style="display: flex; flex-direction: column; gap: 8px;">
-          <!-- Render danh sách bảng con đang chia sẻ -->
-        </div>
-
-        <div
-          style="border-top: 1px solid var(--border-subtle); padding-top: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-muted);">
-          <span>Nếu bạn là giáo viên/chủ trì:</span>
-          <button id="btn-unlock-host-role"
-            style="background: none; border: none; color: #58a6ff; cursor: pointer; text-decoration: underline; font-size: 11px;">Mở
-            Canvas Mẹ (Host)</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Modal Chia Sẻ Từng Bảng Con Qua Socket (Board Share Dialog) -->
-    <div class="math-ocr-modal" id="modal-board-share"
-      style="display:none; align-items:center; justify-content:center;">
-      <div class="glass-panel"
-        style="width: 440px; padding: 22px; border-radius: 14px; box-shadow: 0 24px 60px rgba(0,0,0,0.75); border: 1px solid rgba(88,166,255,0.25); backdrop-filter: blur(24px); background: rgba(13, 17, 23, 0.96); display: flex; flex-direction: column; gap: 14px;">
-        <div
-          style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-subtle); padding-bottom: 10px;">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="font-size: 20px;">📡</span>
-            <div>
-              <span style="font-weight: 700; font-size: 14.5px; color: #58a6ff;" id="board-share-title">Chia Sẻ Bảng
-                Con</span>
-              <div style="font-size: 11px; color: var(--text-muted);" id="board-share-subtitle">Đồng bộ socket độc lập
-                cho bảng này</div>
-            </div>
-          </div>
-          <button id="btn-close-board-share" class="btn-icon-sm" style="font-size: 14px; cursor: pointer;">✕</button>
-        </div>
-
-        <!-- Bật / Tắt chia sẻ bảng này -->
-        <div
-          style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.04); padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-subtle);">
-          <div>
-            <div style="font-size: 12.5px; font-weight: 600; color: #f0f6fc;">Kích hoạt chia sẻ qua Socket</div>
-            <div style="font-size: 11px; color: var(--text-muted);">Chỉ những người có link mới có thể vẽ và xem bảng
-              này</div>
-          </div>
-          <label class="switch-toggle"
-            style="position: relative; display: inline-block; width: 44px; height: 24px; cursor: pointer;">
-            <input type="checkbox" id="toggle-board-share" style="opacity: 0; width: 0; height: 0;">
-            <span class="slider-round"
-              style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #30363d; transition: .3s; border-radius: 24px; border: 1px solid rgba(255,255,255,0.15);"></span>
-          </label>
-        </div>
-
-        <!-- Chi tiết chia sẻ (hiện khi bật) -->
-        <div id="board-share-details" style="display: flex; flex-direction: column; gap: 12px;">
-          <!-- Mã QR riêng của bảng con -->
-          <div
-            style="display: flex; flex-direction: column; align-items: center; justify-content: center; background: #ffffff; padding: 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.2);">
-            <div id="board-share-qrcode"
-              style="width: 170px; height: 170px; display: flex; align-items: center; justify-content: center;"></div>
-            <span style="font-size: 11px; color: #334155; margin-top: 6px; font-weight: 600;">Quét mã trên iPad để mở
-              trực tiếp bảng con này</span>
-          </div>
-
-          <!-- Đường dẫn URL trực tiếp -->
-          <div style="display: flex; flex-direction: column; gap: 5px;">
-            <span style="font-size: 10.5px; color: var(--text-muted); font-weight: 600; text-transform: uppercase;">Liên
-              kết trực tiếp tới bảng con:</span>
-            <div style="display: flex; gap: 8px;">
-              <input type="text" id="input-board-share-url" readonly
-                style="flex: 1; background: #090d13; border: 1px solid rgba(88,166,255,0.3); color: #3fb950; font-family: monospace; font-size: 12px; padding: 7px 10px; border-radius: 6px; font-weight: 600;"
-                value="" />
-              <button id="btn-copy-board-url" class="btn-action primary"
-                style="white-space: nowrap; padding: 7px 12px; cursor: pointer; font-size: 11.5px;">Sao Chép</button>
-            </div>
-          </div>
-
-          <!-- Nút mở tab mới để kiểm tra ngay -->
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <a id="link-open-board-tab" href="#" target="_blank"
-              style="color: #58a6ff; font-size: 11.5px; text-decoration: none; display: flex; align-items: center; gap: 4px;">
-              <span>🔗 Mở thử bảng này trong tab mới</span>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3" />
-              </svg>
-            </a>
-
-            <span id="board-presence-badge"
-              style="font-size: 11px; color: #3fb950; font-weight: 600; background: rgba(63,185,80,0.12); padding: 3px 8px; border-radius: 12px; border: 1px solid rgba(63,185,80,0.3);">
-              🟢 1 thiết bị
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
 
     <!-- Modal Điều Khiển Chiếu Bảng Lên Màn Hình PC Toàn Màn Hình -->
     <div class="math-ocr-modal" id="modal-cast-pc" style="display:none; align-items:center; justify-content:center;">
@@ -863,19 +705,6 @@
             style="display:none; padding: 5px 12px; font-size: 12px; cursor: pointer;">Dừng Chiếu</button>
         </div>
 
-        <!-- Danh sách các bảng có thể chiếu -->
-        <div style="display: flex; flex-direction: column; gap: 8px;">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <span style="font-size: 11px; color: var(--text-muted); font-weight: 600;">DANH SÁCH BẢNG CỦA BẠN:</span>
-            <button id="btn-cast-create-board"
-              style="background: none; border: none; color: #58a6ff; cursor: pointer; font-size: 11.5px; font-weight: 600;">+
-              Thêm Bảng Mới</button>
-          </div>
-          <div id="cast-boards-list"
-            style="display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto;">
-            <!-- Dynamic list of boards with Cast button -->
-          </div>
-        </div>
 
         <!-- Link mở màn hình PC hoặc QR để kiểm tra -->
         <div
@@ -887,37 +716,14 @@
       </div>
     </div>
 
-    <!-- Single Board View Mode Notification Pill (Chế độ xem bảng con) -->
-    <div id="single-board-banner" class="glass-panel"
-      style="display: none; position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 100; padding: 6px 16px; border-radius: 30px; display: none; align-items: center; gap: 12px; border: 1px solid rgba(88,166,255,0.4); background: rgba(13,17,23,0.92); box-shadow: 0 8px 32px rgba(0,0,0,0.6);">
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <span
-          style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #3fb950; box-shadow: 0 0 8px #3fb950;"></span>
-        <span style="font-weight: 600; font-size: 13px; color: #f0f6fc;" id="single-board-name">Bảng Con Đang Đồng
-          Bộ</span>
-        <span id="single-board-presence" style="font-size: 11px; color: #8b949e;">(Đang kết nối)</span>
-      </div>
-      <div class="divider" style="height: 16px;"></div>
-      <button id="btn-single-board-fit" class="btn-action"
-        style="padding: 3px 10px; font-size: 11.5px; border-radius: 14px;" title="Căn chỉnh vừa màn hình">⛶ Căn
-        Giữa</button>
-      <button id="btn-single-board-exit" class="btn-action"
-        style="padding: 3px 10px; font-size: 11.5px; border-radius: 14px; color: #f85149; border-color: rgba(248,81,73,0.3);"
-        title="Chuyển sang chế độ toàn cảnh">Toàn Cảnh</button>
-    </div>
 
     <!-- GIAO DIỆN CHIA SẺ ĐIỆN THOẠI (Mobile Collaboration UI) -->
     <div id="mobile-single-board-ui" class="mobile-board-container" style="display: none;">
       <!-- Top Bar dành riêng cho màn hình điện thoại -->
       <header class="mobile-top-bar glass-panel">
         <div class="mobile-top-left">
-          <button id="btn-mobile-exit" class="mobile-icon-btn" title="Trở về chế độ toàn cảnh">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <path d="M15 18l-6-6 6-6" />
-            </svg>
-          </button>
           <div class="mobile-board-info">
-            <span class="mobile-board-title" id="mobile-board-name">Bảng Con</span>
+            <span class="mobile-board-title" id="mobile-board-name">NestedCanvas</span>
             <span class="mobile-board-status">
               <span class="mobile-live-dot"></span>
               <span id="mobile-board-presence">1 thiết bị</span>

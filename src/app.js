@@ -1144,13 +1144,11 @@ class NestedCanvasApp {
     document.getElementById('btn-undo').addEventListener('click', () => this.undo());
     document.getElementById('btn-redo').addEventListener('click', () => this.redo());
 
-    // Thêm bảng mới
-    document.getElementById('btn-add-sample').addEventListener('click', () => {
-      this.createNewBoard();
-    });
-    document.getElementById('btn-new-child-canvas').addEventListener('click', () => {
-      this.createNewBoard();
-    });
+    // Thêm bảng mới (legacy hooks guarded)
+    const addSampleBtn = document.getElementById('btn-add-sample');
+    if (addSampleBtn) addSampleBtn.addEventListener('click', () => this.createNewBoard());
+    const newChildBtn = document.getElementById('btn-new-child-canvas');
+    if (newChildBtn) newChildBtn.addEventListener('click', () => this.createNewBoard());
 
     // Thêm Bảng Đồ Thị Toán Học Desmos
     const desmosBtn = document.getElementById('btn-add-desmos');
@@ -1160,7 +1158,7 @@ class NestedCanvasApp {
       });
     }
 
-    // Chế Độ Tập Trung (Focus Mode Buttons)
+    // Chế Độ Tập Trung (Focus Mode Buttons - guarded)
     const topFocusBtn = document.getElementById('btn-top-focus');
     if (topFocusBtn) {
       topFocusBtn.addEventListener('click', () => {
@@ -1386,9 +1384,8 @@ class NestedCanvasApp {
     reader.onload = (e) => {
       const img = new Image();
       img.onload = () => {
-        const parentNode = targetNode || (this.selectedNodeId ? this.scene.getNode(this.selectedNodeId) : this.scene.root);
-        const headerH = 28;
-        const maxDim = parentNode.id !== this.scene.root.id ? Math.min(parentNode.width * 0.75, parentNode.height * 0.75) : 500;
+        const parentNode = this.scene.root;
+        const maxDim = 650;
         let w = img.width;
         let h = img.height;
         if (w > maxDim || h > maxDim) {
@@ -1401,16 +1398,13 @@ class NestedCanvasApp {
         let localY = 40;
 
         if (screenPos) {
-          const localPt = this.scene.screenToLocal(screenPos, parentNode.id, this.camera);
-          localX = Math.max(10, localPt.x - w * 0.5);
-          localY = Math.max(headerH + 5, localPt.y - (h + headerH) * 0.5);
-        } else if (parentNode.id !== this.scene.root.id) {
-          localX = Math.max(10, (parentNode.width - w) * 0.5);
-          localY = Math.max(headerH + 5, (parentNode.height - (h + headerH)) * 0.5);
+          const worldPt = this.camera.screenToWorld(screenPos);
+          localX = worldPt.x - w * 0.5;
+          localY = worldPt.y - h * 0.5;
         } else {
           const center = this.camera.screenToWorld(new Vec2(window.innerWidth * 0.5, window.innerHeight * 0.5));
           localX = center.x - w * 0.5;
-          localY = center.y - (h + headerH) * 0.5;
+          localY = center.y - h * 0.5;
         }
 
         let targetImg = img;
@@ -1435,7 +1429,7 @@ class NestedCanvasApp {
         const imageCanvasNode = new CanvasNode(
           `🖼️ ${fileName}`,
           w,
-          h + headerH,
+          h,
           Transform2D.fromTranslation(localX, localY),
           targetImg
         );
@@ -1567,8 +1561,8 @@ class NestedCanvasApp {
       e.preventDefault();
       const hit = this.hitTestBoard(screenPos);
 
-      // CHỈ DI CHUYỂN NỘI DUNG BÊN TRONG NẾU BẢNG ĐÓ ĐÃ ĐƯỢC NHẤP CHỌN (FOCUS) HOẶC LÀ BẢNG ĐỒ THỊ DESMOS
-      if (hit && hit.action === 'body' && (this.selectedNodeId === hit.node.id || hit.node.graphData) && !hit.node.image) {
+      // Nếu bấm vào thân đồ thị toán học -> Di chuyển hệ toạ độ Oxy bên trong đồ thị!
+      if (hit && hit.action === 'graph-body') {
         this.selectedNodeId = hit.node.id;
         this.bringToFront(hit.node.id);
         this.isPanningChild = true;
@@ -1579,7 +1573,7 @@ class NestedCanvasApp {
         return;
       }
 
-      // Mặc định: Di chuyển camera canvas mẹ
+      // Mặc định: Di chuyển camera canvas mẹ vô tận
       this.isPanning = true;
       this.canvas.style.cursor = 'grabbing';
       return;
@@ -1588,54 +1582,20 @@ class NestedCanvasApp {
     if (e.button === 0) {
       const hit = this.hitTestBoard(screenPos);
 
-      // 1. Xử lý các nút trên thanh công cụ của bảng con (Header Toolbar)
-      if (hit && hit.action === 'add-child') {
-        this.createNewBoard(hit.node);
-        return;
-      }
-      if (hit && hit.action === 'add-graph') {
-        this.createDesmosBoard(hit.node);
-        return;
-      }
-      if (hit && hit.action === 'share') {
-        this.openBoardShareModal(hit.node);
-        return;
-      }
-      if (hit && hit.action === 'insert-image') {
-        this.promptInsertImage(hit.node);
-        return;
-      }
-      if (hit && hit.action === 'undo') {
-        this.undoNode(hit.node);
-        return;
-      }
-      if (hit && hit.action === 'redo') {
-        this.redoNode(hit.node);
-        return;
-      }
-      if (hit && hit.action === 'maximize') {
-        this.toggleFocusMode(hit.node);
-        return;
-      }
-      if (hit && hit.action === 'clear') {
-        this.clearBoard(hit.node);
-        return;
-      }
+      // 1. Nút Đóng / Xóa đối tượng [✕]
       if (hit && hit.action === 'close') {
         this.deleteBoard(hit.node.id);
         return;
       }
 
-      // 2. Xử lý 8 điểm neo co giãn kích thước (Resize Handles)
+      // 2. Nút Chỉnh sửa hàm số đồ thị [✎]
+      if (hit && hit.action === 'edit-graph') {
+        this.openGraphEditor(hit.node);
+        return;
+      }
+
+      // 3. Co giãn kích thước đối tượng (8 điểm neo Resize Handles)
       if (hit && hit.action === 'resize') {
-        if (this.isFocusMode) {
-          const focusNode = this.scene.getNode(this.focusNodeId) || this.scene.root;
-          // Khóa thay đổi kích thước của bảng tập trung mẹ để giữ khung nhìn ổn định.
-          // Nhưng các bảng con lồng bên trong VẪN ĐƯỢC CO GIÃN THOẢI MÁI!
-          if (hit.node.id === this.focusNodeId || !focusNode.findNode(hit.node.id)) {
-            return;
-          }
-        }
         this.selectedNodeId = hit.node.id;
         this.bringToFront(hit.node.id);
         this.updateHierarchyTree();
@@ -1656,28 +1616,8 @@ class NestedCanvasApp {
         return;
       }
 
-      // 3. Xử lý Kéo Di Chuyển Cửa Sổ qua Thanh Tiêu Đề (Titlebar Window Dragging)
-      // TUYỆT ĐỐI KHÔNG VẼ VÀO THANH TIÊU ĐỀ, BẤM VÀO LÀ DI CHUYỂN CỬA SỔ
-      if (hit && hit.action === 'titlebar') {
-        const now = performance.now();
-        // Hỗ trợ nhấp đúp vào thanh tiêu đề để bật/tắt Chế Độ Tập Trung
-        if (this.lastTitlebarClickNodeId === hit.node.id && now - this.lastTitlebarClickTime < 320) {
-          this.toggleFocusMode(hit.node);
-          this.lastTitlebarClickTime = 0;
-          return;
-        }
-        this.lastTitlebarClickTime = now;
-        this.lastTitlebarClickNodeId = hit.node.id;
-
-        if (this.isFocusMode) {
-          const focusNode = this.scene.getNode(this.focusNodeId) || this.scene.root;
-          // Khóa kéo di chuyển cho chính bảng tập trung mẹ (để giữ cố định khung hình).
-          // Nhưng các bảng con bên trong VẪN ĐƯỢC KÉO DI CHUYỂN BÌNH THƯỜNG!
-          if (hit.node.id === this.focusNodeId || !focusNode.findNode(hit.node.id)) {
-            return;
-          }
-        }
-
+      // 4. Kéo di chuyển đối tượng (Thanh tiêu đề đồ thị hoặc Thanh di chuyển ảnh)
+      if (hit && hit.action === 'drag-widget') {
         this.selectedNodeId = hit.node.id;
         this.bringToFront(hit.node.id);
         this.isDragging = true;
@@ -1687,44 +1627,43 @@ class NestedCanvasApp {
         this.canvas.style.cursor = 'grabbing';
         this.updateHierarchyTree();
         this.updateNodeProperties();
+        if (hit.node.graphData) {
+          this.updateGraphExpressions(hit.node);
+        }
         return;
       }
 
-      // 4. CÔNG CỤ BÚT VẼ (PEN TOOL) - Gán chính xác vào node mục tiêu
-      if (this.activeTool === 'pen') {
-        let targetNode;
-        if (this.isFocusMode && this.focusNodeId) {
-          const focusNode = this.scene.getNode(this.focusNodeId) || this.scene.root;
-          // Nếu bấm/vẽ vào một bảng con bên trong bảng tập trung -> Vẽ trực tiếp lên bảng con đó!
-          if (hit && hit.action === 'body' && (hit.node.id === this.focusNodeId || focusNode.findNode(hit.node.id))) {
-            targetNode = hit.node;
-            this.selectedNodeId = hit.node.id;
-          } else {
-            targetNode = focusNode;
-            this.selectedNodeId = this.focusNodeId;
-          }
-        } else if (this.isSingleBoardMode) {
-          const sharedRoot = this.scene.getNode(this.singleBoardId);
-          if (hit && hit.node && (hit.node.id === this.singleBoardId || sharedRoot?.findNode(hit.node.id))) {
-            targetNode = hit.node;
-            this.selectedNodeId = hit.node.id;
-          } else {
-            targetNode = sharedRoot || this.scene.root;
-            this.selectedNodeId = this.singleBoardId;
+      // 5. CÔNG CỤ CHỌN (SELECT TOOL)
+      if (this.activeTool === 'select') {
+        if (hit) {
+          this.selectedNodeId = hit.node.id;
+          this.bringToFront(hit.node.id);
+          this.isDragging = true;
+          this.draggingNode = hit.node;
+          this.dragInitialScreenPos = screenPos.clone();
+          this.dragInitialTransform = hit.node.transform.clone();
+          this.canvas.style.cursor = 'grabbing';
+          if (hit.node.graphData) {
+            this.updateGraphExpressions(hit.node);
           }
         } else {
-          targetNode = (hit && hit.action === 'body') ? hit.node : this.scene.root;
-          this.selectedNodeId = hit ? hit.node.id : null;
-          if (hit) this.bringToFront(hit.node.id);
+          this.selectedNodeId = null;
+          this.isPanning = true;
         }
+        this.updateHierarchyTree();
+        this.updateNodeProperties();
+        return;
+      }
 
-        const localPt = this.scene.screenToLocal(screenPos, targetNode.id, this.camera);
+      // 6. CÔNG CỤ BÚT VẼ (PEN TOOL) - Luôn vẽ trực tiếp lên Infinite Canvas mẹ!
+      if (this.activeTool === 'pen') {
+        const localPt = this.scene.screenToLocal(screenPos, this.scene.root.id, this.camera);
         this.updateHierarchyTree();
         this.updateNodeProperties();
 
         const newSession = {
           pointerId: e.pointerId,
-          targetNodeId: targetNode.id,
+          targetNodeId: this.scene.root.id,
           rawPoints: [new Point2D(localPt.x, localPt.y, (e.pressure > 0 ? e.pressure : 0.8))],
           color: this.brushColor,
           baseWidth: this.brushSize,
@@ -1737,77 +1676,11 @@ class NestedCanvasApp {
         return;
       }
 
-      // 5. CÔNG CỤ TẨY (ERASER TOOL - OBJECT & SEGMENT)
+      // 7. CÔNG CỤ TẨY (ERASER TOOL - OBJECT & SEGMENT)
       if (this.activeTool.startsWith('eraser')) {
         this.isErasing = true;
-        let targetNode;
-        if (this.isFocusMode && this.focusNodeId) {
-          const focusNode = this.scene.getNode(this.focusNodeId) || this.scene.root;
-          if (hit && hit.action === 'body' && (hit.node.id === this.focusNodeId || focusNode.findNode(hit.node.id))) {
-            targetNode = hit.node;
-            this.selectedNodeId = hit.node.id;
-          } else {
-            targetNode = focusNode;
-            this.selectedNodeId = this.focusNodeId;
-          }
-        } else if (this.isSingleBoardMode) {
-          const sharedRoot = this.scene.getNode(this.singleBoardId);
-          if (hit && hit.node && (hit.node.id === this.singleBoardId || sharedRoot?.findNode(hit.node.id))) {
-            targetNode = hit.node;
-            this.selectedNodeId = hit.node.id;
-          } else {
-            targetNode = sharedRoot || this.scene.root;
-            this.selectedNodeId = this.singleBoardId;
-          }
-        } else {
-          targetNode = (hit && hit.action === 'body') ? hit.node : (hit ? hit.node : this.scene.root);
-          this.selectedNodeId = hit ? hit.node.id : null;
-        }
-        this.performErase(screenPos, targetNode);
-      }
-
-      // 6. CÔNG CỤ CHỌN (SELECT TOOL)
-      if (this.activeTool === 'select') {
-        if (this.isFocusMode) {
-          const focusNode = this.scene.getNode(this.focusNodeId) || this.scene.root;
-          if (hit && hit.node && hit.node.id !== this.focusNodeId && focusNode.findNode(hit.node.id)) {
-            // Đây là bảng con bên trong bảng tập trung -> Cho phép chọn, đưa lên trước và kéo di chuyển!
-            this.selectedNodeId = hit.node.id;
-            this.bringToFront(hit.node.id);
-            this.isDragging = true;
-            this.draggingNode = hit.node;
-            this.dragInitialScreenPos = screenPos.clone();
-            this.dragInitialTransform = hit.node.transform.clone();
-            this.canvas.style.cursor = 'grabbing';
-            this.updateHierarchyTree();
-            this.updateNodeProperties();
-            return;
-          } else if (hit && hit.node && hit.node.id === this.focusNodeId) {
-            this.selectedNodeId = this.focusNodeId;
-            this.updateHierarchyTree();
-            this.updateNodeProperties();
-            return;
-          } else {
-            this.isPanning = true;
-          }
-          this.updateHierarchyTree();
-          this.updateNodeProperties();
-          return;
-        }
-        if (hit) {
-          this.selectedNodeId = hit.node.id;
-          this.bringToFront(hit.node.id);
-          this.isDragging = true;
-          this.draggingNode = hit.node;
-          this.dragInitialScreenPos = screenPos.clone();
-          this.dragInitialTransform = hit.node.transform.clone();
-          this.canvas.style.cursor = 'grabbing';
-        } else {
-          this.selectedNodeId = null;
-          this.isPanning = true;
-        }
-        this.updateHierarchyTree();
-        this.updateNodeProperties();
+        this.performErase(screenPos, this.scene.root);
+        return;
       }
 
       // 7. CÔNG CỤ KHOANH VÙNG OCR (MARQUEE OCR TOOL - CÁCH 3)
@@ -2322,24 +2195,21 @@ class NestedCanvasApp {
   }
 
   hitTestBoard(screenPos) {
-    const testNode = (node) => {
-      // Test children first (deepest/topmost drawn on top)
-      for (let i = node.children.length - 1; i >= 0; i--) {
-        const hit = testNode(node.children[i]);
-        if (hit) return hit;
-      }
+    const children = this.scene.root.children;
+    if (!children || children.length === 0) return null;
 
-      if (node.id === this.scene.root.id) return null;
+    const handleHitRadius = 14;
 
+    for (let i = children.length - 1; i >= 0; i--) {
+      const node = children[i];
       const screenTransform = this.scene.computeScreenTransform(node.id, this.camera);
       const screenBounds = node.localBounds().transform(screenTransform);
-      const headerH = Math.max(24, Math.min(32, 28 * Math.min(this.camera.zoom, 1.2)));
-
-      // 1. Kiểm tra 8 điểm neo Resize (hỗ trợ cả khi chưa chọn mà nhấp góc bảng)
-      const handleHitRadius = 14;
       const isSelected = this.selectedNodeId === node.id;
-      const handles = isSelected
-        ? [
+      const localPt = this.scene.screenToLocal(screenPos, node.id, this.camera);
+
+      // 1. Kiểm tra 8 điểm neo Resize (khi đối tượng đang được chọn)
+      if (isSelected) {
+        const handles = [
           { name: 'nw', x: screenBounds.minX, y: screenBounds.minY },
           { name: 'ne', x: screenBounds.maxX, y: screenBounds.minY },
           { name: 'se', x: screenBounds.maxX, y: screenBounds.maxY },
@@ -2348,109 +2218,97 @@ class NestedCanvasApp {
           { name: 's', x: (screenBounds.minX + screenBounds.maxX) * 0.5, y: screenBounds.maxY },
           { name: 'e', x: screenBounds.maxX, y: (screenBounds.minY + screenBounds.maxY) * 0.5 },
           { name: 'w', x: screenBounds.minX, y: (screenBounds.minY + screenBounds.maxY) * 0.5 },
-        ]
-        : [
-          { name: 'se', x: screenBounds.maxX, y: screenBounds.maxY },
-          { name: 'sw', x: screenBounds.minX, y: screenBounds.maxY },
-          { name: 'ne', x: screenBounds.maxX, y: screenBounds.minY },
-          { name: 'nw', x: screenBounds.minX, y: screenBounds.minY },
         ];
 
-      for (const handle of handles) {
-        if (Math.hypot(screenPos.x - handle.x, screenPos.y - handle.y) <= handleHitRadius) {
-          const localPt = this.scene.screenToLocal(screenPos, node.id, this.camera);
-          return { node, action: 'resize', handle: handle.name, localPt };
+        for (const handle of handles) {
+          if (Math.hypot(screenPos.x - handle.x, screenPos.y - handle.y) <= handleHitRadius) {
+            return { node, action: 'resize', handle: handle.name, localPt };
+          }
         }
       }
 
-      // 2. Kiểm tra bên trong hình chữ nhật trên màn hình
-      if (
-        screenPos.x >= screenBounds.minX &&
-        screenPos.x <= screenBounds.maxX &&
-        screenPos.y >= screenBounds.minY &&
-        screenPos.y <= screenBounds.maxY
-      ) {
-        const localPt = this.scene.screenToLocal(screenPos, node.id, this.camera);
+      // 2. Đối tượng là Ảnh (Image Widget)
+      if (node.image) {
+        // Nếu ảnh đang chọn: kiểm tra thanh thao tác di chuyển / nút xóa phía trên ảnh
+        if (isSelected) {
+          const pillH = 26;
+          const pillW = Math.min(screenBounds.width, 160);
+          const pillX = screenBounds.minX + (screenBounds.width - pillW) * 0.5;
+          const pillY = Math.max(8, screenBounds.minY - pillH - 6);
 
-        // Vùng thanh tiêu đề Header (y từ minY đến minY + headerH)
-        if (screenPos.y <= screenBounds.minY + headerH) {
-          const centerY = screenBounds.minY + headerH * 0.5;
-          const w = screenBounds.width;
-          const btnRadius = 12;
-
-          // 1. Nút Đóng / Xóa bảng (✕)
-          const delX = screenBounds.maxX - 12;
-          if (Math.hypot(screenPos.x - delX, screenPos.y - centerY) <= btnRadius) {
+          // Nút xóa [✕] trên thanh di chuyển
+          const closeBtnX = pillX + pillW - 14;
+          const closeBtnY = pillY + pillH * 0.5;
+          if (Math.hypot(screenPos.x - closeBtnX, screenPos.y - closeBtnY) <= 12) {
             return { node, action: 'close', localPt };
           }
-          // 2. Nút Phóng to Focus (⛶)
-          if (w >= 56) {
-            const maxX = screenBounds.maxX - 34;
-            if (Math.hypot(screenPos.x - maxX, screenPos.y - centerY) <= btnRadius) {
-              return { node, action: 'maximize', localPt };
-            }
-          }
-          // 3. Nút Xóa sạch nét (🗑️)
-          if (w >= 80) {
-            const clrX = screenBounds.maxX - 56;
-            if (Math.hypot(screenPos.x - clrX, screenPos.y - centerY) <= btnRadius) {
-              return { node, action: 'clear', localPt };
-            }
-          }
-          // 4. Nút Redo (↷)
-          if (w >= 104) {
-            const redoX = screenBounds.maxX - 78;
-            if (Math.hypot(screenPos.x - redoX, screenPos.y - centerY) <= btnRadius) {
-              return { node, action: 'redo', localPt };
-            }
-          }
-          // 5. Nút Undo (↶)
-          if (w >= 128) {
-            const undoX = screenBounds.maxX - 100;
-            if (Math.hypot(screenPos.x - undoX, screenPos.y - centerY) <= btnRadius) {
-              return { node, action: 'undo', localPt };
-            }
-          }
-          // 6. Nút Chèn Ảnh (🖼️)
-          if (w >= 152) {
-            const imgX = screenBounds.maxX - 122;
-            if (Math.hypot(screenPos.x - imgX, screenPos.y - centerY) <= btnRadius) {
-              return { node, action: 'insert-image', localPt };
-            }
-          }
-          // 7. Nút Chia Sẻ Bảng Qua Socket (📡)
-          if (w >= 170) {
-            const shareX = screenBounds.maxX - 144;
-            if (Math.hypot(screenPos.x - shareX, screenPos.y - centerY) <= btnRadius) {
-              return { node, action: 'share', localPt };
-            }
-          }
-          // 8. Nút Thêm Bảng Con (+📋)
-          if (w >= 194) {
-            const addX = screenBounds.maxX - 166;
-            if (Math.hypot(screenPos.x - addX, screenPos.y - centerY) <= btnRadius) {
-              return { node, action: 'add-child', localPt };
-            }
-          }
-          // 9. Nút Thêm Đồ Thị Con (+📈)
-          if (w >= 218) {
-            const addGraphX = screenBounds.maxX - 188;
-            if (Math.hypot(screenPos.x - addGraphX, screenPos.y - centerY) <= btnRadius) {
-              return { node, action: 'add-graph', localPt };
-            }
-          }
 
-          return { node, action: 'titlebar', localPt };
+          // Vùng thanh di chuyển
+          if (
+            screenPos.x >= pillX &&
+            screenPos.x <= pillX + pillW &&
+            screenPos.y >= pillY &&
+            screenPos.y <= pillY + pillH
+          ) {
+            return { node, action: 'drag-widget', localPt };
+          }
         }
 
-        // Vùng thân bảng Body
-        return { node, action: 'body', localPt };
+        // Bấm trong thân ảnh
+        if (
+          screenPos.x >= screenBounds.minX &&
+          screenPos.x <= screenBounds.maxX &&
+          screenPos.y >= screenBounds.minY &&
+          screenPos.y <= screenBounds.maxY
+        ) {
+          return { node, action: 'image-body', localPt };
+        }
       }
 
-      return null;
-    };
+      // 3. Đối tượng là Đồ Thị Toán Học (Graph Widget)
+      if (node.graphData) {
+        const headerH = Math.max(24, Math.min(30, 26 * Math.min(this.camera.zoom, 1.2)));
 
-    return testNode(this.scene.root);
+        // Thanh tiêu đề Header
+        if (
+          screenPos.x >= screenBounds.minX &&
+          screenPos.x <= screenBounds.maxX &&
+          screenPos.y >= screenBounds.minY &&
+          screenPos.y <= screenBounds.minY + headerH
+        ) {
+          const centerY = screenBounds.minY + headerH * 0.5;
+
+          // Nút Xóa [✕]
+          const delX = screenBounds.maxX - 14;
+          if (Math.hypot(screenPos.x - delX, screenPos.y - centerY) <= 12) {
+            return { node, action: 'close', localPt };
+          }
+
+          // Nút Chỉnh Sửa Hàm Số [✎]
+          if (screenBounds.width >= 60) {
+            const editX = screenBounds.maxX - 36;
+            if (Math.hypot(screenPos.x - editX, screenPos.y - centerY) <= 12) {
+              return { node, action: 'edit-graph', localPt };
+            }
+          }
+
+          // Kéo di chuyển bảng đồ thị
+          return { node, action: 'drag-widget', localPt };
+        }
+
+        // Vùng thân đồ thị (Math Coordinate Plane)
+        if (
+          screenPos.x >= screenBounds.minX &&
+          screenPos.x <= screenBounds.maxX &&
+          screenPos.y >= screenBounds.minY + headerH &&
+          screenPos.y <= screenBounds.maxY
+        ) {
+          return { node, action: 'graph-body', localPt };
+        }
+      }
+    }
+
+    return null;
   }
 
   enterFocusMode(node) {
@@ -2794,75 +2652,8 @@ class NestedCanvasApp {
   }
 
   createNewBoard(targetParent) {
-    this.boardCounter = (this.boardCounter || 0) + 1;
-    const count = this.boardCounter;
-
-    let parent = targetParent;
-    if (!parent) {
-      if (this.isSingleBoardMode) {
-        const activeNode = this.selectedNodeId ? this.scene.getNode(this.selectedNodeId) : null;
-        const sharedRoot = this.scene.getNode(this.singleBoardId);
-        if (activeNode && sharedRoot && (activeNode.id === sharedRoot.id || sharedRoot.findNode(activeNode.id))) {
-          parent = activeNode;
-        } else {
-          parent = sharedRoot || this.scene.root;
-        }
-      } else if (this.selectedNodeId && this.selectedNodeId !== this.scene.root.id) {
-        parent = this.scene.getNode(this.selectedNodeId) || this.scene.root;
-      } else {
-        parent = this.scene.root;
-      }
-    }
-    if (!parent) parent = this.scene.root;
-
-    const isRoot = parent.id === this.scene.root.id;
-    let newBoard;
-    if (isRoot) {
-      const screenCenter = new Vec2(window.innerWidth * 0.5, window.innerHeight * 0.5);
-      const worldPos = this.camera.screenToWorld(screenCenter);
-      newBoard = new CanvasNode(
-        `Bảng ${count}`,
-        680,
-        460,
-        Transform2D.fromTranslation(worldPos.x - 340, worldPos.y - 230)
-      );
-    } else {
-      // Tạo bảng con lồng bên trong bảng cha (Nested Child Board)
-      const childW = Math.min(Math.max(260, parent.width * 0.52), 400);
-      const childH = Math.min(Math.max(170, parent.height * 0.52), 260);
-      const offsetIdx = parent.children.length % 5;
-      const localX = Math.max(20, Math.min(parent.width - childW - 20, 30 + offsetIdx * 25));
-      const localY = Math.max(40, Math.min(parent.height - childH - 20, 50 + offsetIdx * 25));
-      newBoard = new CanvasNode(
-        `Bảng Con ${count}`,
-        childW,
-        childH,
-        Transform2D.fromTranslation(localX, localY)
-      );
-    }
-
-    newBoard.style = this.globalTheme || parent.style || this.scene.root.style || 'chalkboard';
-    newBoard.gridType = this.globalGrid || parent.gridType || this.scene.root.gridType || 'grid';
-
-    this.history.execute(new CreateNodeCommand(parent.id, newBoard), this.scene);
-    this.selectedNodeId = newBoard.id;
-
-    // Phát sóng NODE_CREATE đến toàn bộ các thiết bị đang mở app (Phone, Web, Display)
-    const sharedRoot = this.getSharedRootForNode(parent.id);
-    if (this.syncClient && this.syncClient.isConnected && !this.isApplyingRemoteSync) {
-      this.syncClient.send('NODE_CREATE', {
-        clientId: this.clientId,
-        boardId: sharedRoot ? sharedRoot.id : null,
-        parentId: parent.id,
-        node: newBoard.toJSON(),
-      });
-    }
-
-    this.updateHierarchyTree();
-    this.updateNodeProperties();
-    this.updateUI();
-    this.scheduleContentSave();
-    return newBoard;
+    // Version 2: Loại bỏ hoàn toàn bảng con lồng nhau. Toàn bộ nét vẽ nằm trên Canvas vô tận.
+    return null;
   }
 
   /**
@@ -2984,132 +2775,127 @@ class NestedCanvasApp {
     if (val) val.textContent = `${Math.round(this.camera.zoom * 100)}%`;
   }
 
+  openGraphEditor(node) {
+    if (!node) return;
+    this.selectedNodeId = node.id;
+    const inspector = document.getElementById('inspector-panel');
+    if (inspector) inspector.classList.add('open');
+    this.updateHierarchyTree();
+    this.updateGraphExpressions(node);
+  }
+
+  centerCameraOnNode(node) {
+    if (!node) return;
+    const screenCenter = new Vec2(window.innerWidth * 0.5, window.innerHeight * 0.5);
+    const worldCenter = new Vec2(node.transform.tx + node.width * 0.5, node.transform.ty + node.height * 0.5);
+    this.camera.pan.x = worldCenter.x - (screenCenter.x / this.camera.zoom);
+    this.camera.pan.y = worldCenter.y - (screenCenter.y / this.camera.zoom);
+    this.broadcastCurrentCameraSync();
+  }
+
   updateHierarchyTree() {
     const container = document.getElementById('tree-list');
     if (!container) return;
     container.innerHTML = '';
 
-    const renderNodeItem = (node, depth = 0) => {
+    const objects = this.scene.root.children;
+
+    if (!objects || objects.length === 0) {
+      container.innerHTML = `
+        <div style="padding: 16px 10px; font-size: 11.5px; color: var(--text-muted); text-align: center; line-height: 1.6;">
+          Chưa có ảnh hoặc đồ thị nào.<br>
+          <span style="font-size: 10.5px; opacity: 0.75;">Bấm <b>+ Đồ Thị</b> hoặc <b>Chèn Ảnh</b> ở thanh trên để thêm.</span>
+        </div>
+      `;
+      const activeBadge = document.getElementById('stat-active-board');
+      if (activeBadge) activeBadge.textContent = 'Toàn bộ canvas';
+      const statNodes = document.getElementById('stat-nodes');
+      if (statNodes) statNodes.textContent = '0';
+      const statStrokes = document.getElementById('stat-strokes');
+      if (statStrokes) statStrokes.textContent = this.scene.root.elements.length;
+      return;
+    }
+
+    for (const node of objects) {
       const item = document.createElement('div');
       item.className = `tree-item ${node.id === this.selectedNodeId ? 'selected' : ''}`;
-      item.style.paddingLeft = `${10 + depth * 14}px`;
+      item.style.padding = '6px 8px';
+      item.style.display = 'flex';
+      item.style.alignItems = 'center';
+      item.style.justifyContent = 'space-between';
+      item.style.borderRadius = '6px';
+      item.style.marginBottom = '3px';
+      item.style.cursor = 'pointer';
 
-      const isSharedRoot = !!node.isShared;
-      const isDescendantShared = !isSharedRoot && !!this.getSharedRootForNode(node.id);
-      const isSub = depth > 0;
+      const icon = node.image ? '🖼️' : (node.graphData ? '📈' : '📄');
+      const name = node.name || (node.image ? 'Hình Ảnh' : 'Đồ Thị');
 
-      let shareBadge = '';
-      if (!isSub) {
-        shareBadge = `<button class="btn-tree-share ${isSharedRoot ? 'shared' : ''}" title="${isSharedRoot ? 'Đang chia sẻ qua socket (bấm để xem mã QR/link)' : 'Chia sẻ bảng này qua socket'}">📡</button>`;
-      } else if (isDescendantShared) {
-        shareBadge = `<span style="font-size:10px; color:#3fb950; margin-right:2px;" title="Tự động chia sẻ theo bảng mẹ">🔗</span>`;
-      } else {
-        shareBadge = `<span style="font-size:10px; opacity:0.4; margin-right:2px;">└</span>`;
-      }
-
-      const boardIcon = node.graphData ? '📈' : '📋';
       item.innerHTML = `
-        <div style="display:flex; align-items:center; gap:5px; overflow:hidden; flex:1;">
-          ${shareBadge}
-          <span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${isSub ? `↳ ${boardIcon}` : boardIcon} ${node.name}</span>
+        <div style="display: flex; align-items: center; gap: 6px; overflow: hidden; flex: 1;">
+          <span style="font-size: 13px;">${icon}</span>
+          <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; font-weight: 500;">${name}</span>
         </div>
-        <div style="display:flex; align-items:center; gap:4px;">
-          <button class="btn-tree-focus" title="${this.isFocusMode && this.focusNodeId === node.id ? 'Đang ở Chế Độ Tập Trung (Bấm để thoát)' : 'Chế Độ Tập Trung (F)'}" style="background:${this.isFocusMode && this.focusNodeId === node.id ? 'rgba(188,140,255,0.25)' : 'none'}; border:${this.isFocusMode && this.focusNodeId === node.id ? '1px solid #bc8cff' : 'none'}; color:#d2a8ff; cursor:pointer; font-size:11px; padding:1px 4px; border-radius:4px;">🎯</button>
-          <button class="btn-tree-add-sub" title="Thêm bảng con lồng bên trong" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:11px; padding:1px 3px; border-radius:3px;">+📋</button>
-          <button class="btn-tree-add-graph" title="Thêm đồ thị con lồng bên trong" style="background:none; border:none; color:#3fb950; cursor:pointer; font-size:11px; padding:1px 3px; border-radius:3px;">+📈</button>
-          <span style="font-size:10px; opacity:0.6">${node.elements.length} nét</span>
+        <div style="display: flex; align-items: center; gap: 4px;">
+          <button class="btn-obj-center" title="Định vị & phóng tới đối tượng này" style="background: rgba(88,166,255,0.12); border: 1px solid rgba(88,166,255,0.3); color: #58a6ff; cursor: pointer; font-size: 11px; padding: 2px 5px; border-radius: 4px;">🔍</button>
+          ${node.graphData ? `<button class="btn-obj-edit" title="Chỉnh sửa hàm số" style="background: rgba(63,185,80,0.15); border: 1px solid rgba(63,185,80,0.3); color: #3fb950; cursor: pointer; font-size: 11px; padding: 2px 5px; border-radius: 4px;">✎</button>` : ''}
+          <button class="btn-obj-del" title="Xóa đối tượng này" style="background: rgba(248,81,73,0.15); border: 1px solid rgba(248,81,73,0.3); color: #f85149; cursor: pointer; font-size: 11px; padding: 2px 5px; border-radius: 4px;">✕</button>
         </div>
       `;
 
-      const focusTreeBtn = item.querySelector('.btn-tree-focus');
-      if (focusTreeBtn) {
-        focusTreeBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this.toggleFocusMode(node);
-        });
-      }
-
-      const shareBtn = item.querySelector('.btn-tree-share');
-      if (shareBtn) {
-        shareBtn.addEventListener('click', (e) => {
+      // Zoom to object
+      const centerBtn = item.querySelector('.btn-obj-center');
+      if (centerBtn) {
+        centerBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           this.selectedNodeId = node.id;
-          this.openBoardShareModal(node);
+          this.centerCameraOnNode(node);
+          this.updateHierarchyTree();
+          this.updateNodeProperties();
         });
       }
 
-      const addSubBtn = item.querySelector('.btn-tree-add-sub');
-      if (addSubBtn) {
-        addSubBtn.addEventListener('click', (e) => {
+      // Edit graph expressions
+      const editBtn = item.querySelector('.btn-obj-edit');
+      if (editBtn) {
+        editBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          this.createNewBoard(node);
+          this.openGraphEditor(node);
         });
       }
 
-      const addGraphBtn = item.querySelector('.btn-tree-add-graph');
-      if (addGraphBtn) {
-        addGraphBtn.addEventListener('click', (e) => {
+      // Delete object
+      const delBtn = item.querySelector('.btn-obj-del');
+      if (delBtn) {
+        delBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          this.createDesmosBoard(node);
+          this.deleteBoard(node.id);
         });
       }
 
+      // Select object
       item.addEventListener('click', () => {
         this.selectedNodeId = node.id;
-        if (!this.isFocusMode) {
-          this.bringToFront(node.id);
-        }
+        this.bringToFront(node.id);
         this.updateHierarchyTree();
         this.updateNodeProperties();
+        if (node.graphData) {
+          this.updateGraphExpressions(node);
+        }
       });
 
       container.appendChild(item);
-
-      if (node.children && node.children.length > 0) {
-        for (const child of node.children) {
-          renderNodeItem(child, depth + 1);
-        }
-      }
-    };
-
-    const targetList = this.isSingleBoardMode
-      ? (this.scene.getNode(this.singleBoardId) ? [this.scene.getNode(this.singleBoardId)] : [])
-      : this.scene.root.children;
-
-    for (const node of targetList) {
-      renderNodeItem(node, 0);
     }
 
     const activeNode = this.scene.getNode(this.selectedNodeId);
     const activeBadge = document.getElementById('stat-active-board');
     if (activeBadge) {
-      activeBadge.textContent = activeNode ? `Đang chọn: ${activeNode.name.split(':')[0]}` : 'Chưa chọn bảng';
+      activeBadge.textContent = activeNode ? `Đang chọn: ${activeNode.name.split(':')[0]}` : 'Toàn bộ canvas';
     }
 
-    const topFocusBtn = document.getElementById('btn-top-focus');
-    if (topFocusBtn) {
-      const canFocus = activeNode && activeNode.id !== this.scene.root.id;
-      topFocusBtn.style.display = canFocus ? 'inline-flex' : 'none';
-      if (canFocus) {
-        topFocusBtn.innerHTML = `
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="9" />
-            <circle cx="12" cy="12" r="4" />
-            <circle cx="12" cy="12" r="1" fill="currentColor" />
-          </svg>
-          ${(this.isFocusMode && this.focusNodeId === activeNode.id) ? 'Thoát Tập Trung ✕' : '🎯 Tập Trung'}
-        `;
-      }
-    }
-
-    const totalStrokes = this.countTotalStrokes(this.scene.root);
-    const totalBoardsCount = (node) => {
-      let c = node.children.length;
-      for (const ch of node.children) c += totalBoardsCount(ch);
-      return c;
-    };
-    document.getElementById('stat-nodes').textContent = totalBoardsCount(this.scene.root);
-    document.getElementById('stat-strokes').textContent = totalStrokes;
+    const statNodes = document.getElementById('stat-nodes');
+    if (statNodes) statNodes.textContent = objects.length;
+    const statStrokes = document.getElementById('stat-strokes');
+    if (statStrokes) statStrokes.textContent = this.scene.root.elements.length;
   }
 
   countTotalStrokes(node) {
@@ -3124,47 +2910,18 @@ class NestedCanvasApp {
     });
   }
 
-  createDesmosBoard(targetParent) {
+  createDesmosBoard() {
     this.graphCounter = (this.graphCounter || 0) + 1;
     const count = this.graphCounter;
+    const parent = this.scene.root;
 
-    let parent = targetParent;
-    if (!parent) {
-      if (this.isSingleBoardMode) {
-        const activeNode = this.selectedNodeId ? this.scene.getNode(this.selectedNodeId) : null;
-        const sharedRoot = this.scene.getNode(this.singleBoardId);
-        if (activeNode && sharedRoot && (activeNode.id === sharedRoot.id || sharedRoot.findNode(activeNode.id))) {
-          parent = activeNode;
-        } else {
-          parent = sharedRoot || this.scene.root;
-        }
-      } else if (this.selectedNodeId && this.selectedNodeId !== this.scene.root.id) {
-        parent = this.scene.getNode(this.selectedNodeId) || this.scene.root;
-      } else {
-        parent = this.scene.root;
-      }
-    }
-    if (!parent) parent = this.scene.root;
+    const desmosW = 720;
+    const desmosH = 500;
 
-    const isRoot = parent.id === this.scene.root.id;
-
-    let desmosW = 720;
-    let desmosH = 500;
-    let posX = 100;
-    let posY = 100;
-
-    if (isRoot) {
-      const screenCenter = new Vec2(window.innerWidth * 0.5, window.innerHeight * 0.5);
-      const worldPos = this.camera.screenToWorld(screenCenter);
-      posX = worldPos.x - desmosW * 0.5;
-      posY = worldPos.y - desmosH * 0.5;
-    } else {
-      desmosW = Math.min(Math.max(280, parent.width * 0.72), 720);
-      desmosH = Math.min(Math.max(200, parent.height * 0.72), 500);
-      const offsetIdx = parent.children.length % 5;
-      posX = Math.max(15, Math.min(parent.width - desmosW - 15, 25 + offsetIdx * 20));
-      posY = Math.max(35, Math.min(parent.height - desmosH - 15, 45 + offsetIdx * 20));
-    }
+    const screenCenter = new Vec2(window.innerWidth * 0.5, window.innerHeight * 0.5);
+    const worldPos = this.camera.screenToWorld(screenCenter);
+    const posX = worldPos.x - desmosW * 0.5;
+    const posY = worldPos.y - desmosH * 0.5;
 
     const defaultGraphData = {
       xSpan: 20,
@@ -3176,14 +2933,14 @@ class NestedCanvasApp {
     };
 
     const desmosNode = new CanvasNode(
-      isRoot ? `📈 Đồ Thị ${count}` : `📈 Đồ Thị Con ${count}`,
+      `Đồ Thị ${count}`,
       desmosW,
       desmosH,
       Transform2D.fromTranslation(posX, posY),
       null,
       defaultGraphData,
-      this.globalTheme || parent.style || this.scene.root.style || 'chalkboard',
-      this.globalGrid || parent.gridType || this.scene.root.gridType || 'grid'
+      this.globalTheme || this.scene.root.style || 'chalkboard',
+      this.globalGrid || this.scene.root.gridType || 'grid'
     );
 
     this.history.execute(new CreateNodeCommand(parent.id, desmosNode), this.scene);

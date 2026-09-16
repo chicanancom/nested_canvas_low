@@ -413,206 +413,480 @@ export class CanvasRenderer {
     remoteSessions = null,
     focusedContext = null
   ) {
-    // nodeScreenTransform = parentScreenTransform * node.transform
-    const nodeScreenTransform = isRoot
-      ? parentScreenTransform
-      : node.transform.then(parentScreenTransform);
-
-    // Fast bounds calculation
-    const localBounds = node.localBounds();
-    const nodeScreenBounds = localBounds.transform(nodeScreenTransform);
-
-    const isFocusActive = !!(focusedContext && focusedContext.focusedNodeId && !this.isDisplayMode);
-    const isFocused = !isRoot && isFocusActive && node.id === focusedContext.focusedNodeId;
-    const isInFocusedBranch = !isFocusActive || isRoot ||
-      (focusedContext.focusedSubtreeIds && focusedContext.focusedSubtreeIds.has(node.id)) ||
-      (focusedContext.focusedAncestorIds && focusedContext.focusedAncestorIds.has(node.id));
-
-    // Chỉ làm mờ các bảng hoàn toàn nằm ngoài nhánh tập trung.
-    // Các bảng con cấp 2, cấp 3, cấp 4... bên trong bảng tập trung và các bảng cha chứa nó
-    // TUYỆT ĐỐI KHÔNG bị làm mờ, luôn hiển thị 100% sắc nét!
-    const isDimmed = isFocusActive && !isRoot && !isInFocusedBranch;
-    let dimmedSaved = false;
-
-    if (!isRoot) {
-      const isVisible = currentScissor.intersects(nodeScreenBounds);
-      if (!isVisible) {
-        this.stats.culledNodes++;
-        return;
-      }
+    if (isRoot) {
       this.stats.renderedNodes++;
 
-      if (isDimmed && ctx.globalAlpha > 0.3) {
-        ctx.save();
-        ctx.globalAlpha = 0.2;
-        dimmedSaved = true;
-      }
+      // 1. Render Children First: Math Graphs & Images on the Infinite Canvas
+      for (const child of node.children) {
+        const childScreenTransform = child.transform.then(parentScreenTransform);
+        const childBounds = child.localBounds().transform(childScreenTransform);
+        if (!viewportFrustum.intersects(childBounds)) {
+          this.stats.culledNodes++;
+          continue;
+        }
+        this.stats.renderedNodes++;
 
-      // Draw Child Board (Bảng Con) Container Background & Frame
-      this.drawCanvasContainer(ctx, node, nodeScreenBounds, node.id === selectedNodeId, camera.zoom, isFocused);
-    } else {
-      this.stats.renderedNodes++;
-    }
+        if (child.image) {
+          this.drawImageNode(ctx, child, childBounds, child.id === selectedNodeId, camera.zoom);
+        } else if (child.graphData) {
+          this.drawGraphNode(ctx, child, childBounds, child.id === selectedNodeId, camera.zoom);
+        } else if (child.textContent) {
+          this.drawNodeTextContent(ctx, child, childScreenTransform);
+        } else {
+          this.drawCanvasContainer(ctx, child, childBounds, child.id === selectedNodeId, camera.zoom);
+        }
 
-    // Scissor clipping for child boards (strictly inside writing surface below header)
-    ctx.save();
-    let effectiveScissor = currentScissor;
-
-    if (!isRoot) {
-      const headerH = Math.max(24, Math.min(32, 28 * Math.min(camera.zoom, 1.2)));
-      const bodyBounds = AABB.fromOriginSize(
-        nodeScreenBounds.minX,
-        nodeScreenBounds.minY + headerH,
-        nodeScreenBounds.width,
-        Math.max(0, nodeScreenBounds.height - headerH)
-      );
-      effectiveScissor = currentScissor.intersection(bodyBounds) || currentScissor;
-      ctx.beginPath();
-      ctx.rect(
-        nodeScreenBounds.minX,
-        nodeScreenBounds.minY + headerH,
-        nodeScreenBounds.width,
-        Math.max(0, nodeScreenBounds.height - headerH)
-      );
-      ctx.clip();
-    }
-
-    // Inner Content Screen Transform (Áp dụng cuộn & zoom vô tận bên trong bảng con)
-    const innerContentScreenTransform = isRoot
-      ? nodeScreenTransform
-      : node.localContentTransform().then(nodeScreenTransform);
-
-    // Render Images inside this board (underneath strokes so you can draw on images)
-    if (node.images && node.images.length > 0) {
-      for (const imgEl of node.images) {
-        if (!imgEl) continue;
-        const imgBounds = imgEl.bounds ? imgEl.bounds.transform(innerContentScreenTransform) : null;
-        if (!imgBounds || effectiveScissor.intersects(imgBounds)) {
-          const p0 = innerContentScreenTransform.transformPoint(new Vec2(imgEl.x, imgEl.y));
-          const scaleX = innerContentScreenTransform.a || 1.0;
-          const scaleY = innerContentScreenTransform.d || 1.0;
-          try {
-            if (imgEl.img instanceof HTMLImageElement || (typeof Image !== 'undefined' && imgEl.img instanceof Image)) {
-              if (imgEl.img.complete && imgEl.img.naturalWidth > 0) {
-                ctx.drawImage(imgEl.img, p0.x, p0.y, imgEl.width * scaleX, imgEl.height * scaleY);
-              } else if (!imgEl.img._hasLoadHandler) {
-                imgEl.img._hasLoadHandler = true;
-                imgEl.img.addEventListener('load', () => {
-                  if (typeof CanvasNode.onImageLoaded === 'function') {
-                    CanvasNode.onImageLoaded();
-                  }
-                });
-              }
-            } else if (typeof imgEl.img === 'string') {
-              const img = new Image();
-              img.src = imgEl.img;
-              imgEl.img = img;
-              img.onload = () => {
-                if (typeof CanvasNode.onImageLoaded === 'function') {
-                  CanvasNode.onImageLoaded();
-                }
-              };
-            }
-          } catch (e) {}
+        // Render any strokes inside the child if any exist (legacy compatibility)
+        if (child.elements && child.elements.length > 0) {
+          for (const stroke of child.elements) {
+            this.drawStroke(ctx, stroke, childScreenTransform);
+          }
         }
       }
-    }
 
-    // Render Text Content (if this node is a converted OCR text board / note)
-    if (node.textContent) {
-      this.drawNodeTextContent(ctx, node, innerContentScreenTransform);
-    }
+      // 2. Render Freehand Strokes on the Unified Infinite Canvas (Overlaid on top so you can annotate over images & graphs!)
+      const { a: ta, b: tb, c: tc, d: td, tx: ttx, ty: tty } = parentScreenTransform;
+      const scMinX = viewportFrustum.minX, scMaxX = viewportFrustum.maxX;
+      const scMinY = viewportFrustum.minY, scMaxY = viewportFrustum.maxY;
 
-    // Render Strokes inside this board with zero-allocation fast culling
-    const { a: ta, b: tb, c: tc, d: td, tx: ttx, ty: tty } = innerContentScreenTransform;
-    const scMinX = effectiveScissor.minX, scMaxX = effectiveScissor.maxX;
-    const scMinY = effectiveScissor.minY, scMaxY = effectiveScissor.maxY;
+      for (const stroke of node.elements) {
+        const b = stroke.bounds;
+        const x1 = ta * b.minX + tc * b.minY + ttx;
+        const y1 = tb * b.minX + td * b.minY + tty;
+        const x2 = ta * b.maxX + tc * b.minY + ttx;
+        const y2 = tb * b.maxX + td * b.minY + tty;
+        const x3 = ta * b.minX + tc * b.maxY + ttx;
+        const y3 = tb * b.minX + td * b.maxY + tty;
+        const x4 = ta * b.maxX + tc * b.maxY + ttx;
+        const y4 = tb * b.maxX + td * b.maxY + tty;
 
-    for (const stroke of node.elements) {
-      const b = stroke.bounds;
-      const x1 = ta * b.minX + tc * b.minY + ttx;
-      const y1 = tb * b.minX + td * b.minY + tty;
-      const x2 = ta * b.maxX + tc * b.minY + ttx;
-      const y2 = tb * b.maxX + td * b.minY + tty;
-      const x3 = ta * b.minX + tc * b.maxY + ttx;
-      const y3 = tb * b.minX + td * b.maxY + tty;
-      const x4 = ta * b.maxX + tc * b.maxY + ttx;
-      const y4 = tb * b.maxX + td * b.maxY + tty;
+        const sMinX = Math.min(x1, x2, x3, x4);
+        const sMaxX = Math.max(x1, x2, x3, x4);
+        const sMinY = Math.min(y1, y2, y3, y4);
+        const sMaxY = Math.max(y1, y2, y3, y4);
 
-      const sMinX = Math.min(x1, x2, x3, x4);
-      const sMaxX = Math.max(x1, x2, x3, x4);
-      const sMinY = Math.min(y1, y2, y3, y4);
-      const sMaxY = Math.max(y1, y2, y3, y4);
-
-      if (sMinX <= scMaxX && sMaxX >= scMinX && sMinY <= scMaxY && sMaxY >= scMinY) {
-        this.stats.renderedStrokes++;
-        this.drawStroke(ctx, stroke, innerContentScreenTransform);
-      } else {
-        this.stats.culledStrokes++;
+        if (sMinX <= scMaxX && sMaxX >= scMinX && sMinY <= scMaxY && sMaxY >= scMinY) {
+          this.stats.renderedStrokes++;
+          this.drawStroke(ctx, stroke, parentScreenTransform);
+        } else {
+          this.stats.culledStrokes++;
+        }
       }
-    }
 
-    // Render Live In-Flight Strokes (Hỗ trợ cả nét vẽ đơn điểm lẫn đa điểm / Multi-touch Android)
-    if (activeSession) {
-      const localSessions = activeSession instanceof Map
-        ? Array.from(activeSession.values())
-        : (Array.isArray(activeSession) ? activeSession : [activeSession]);
+      // 3. Render Live In-Flight Strokes (Hỗ trợ đa điểm Multi-touch & đơn điểm)
+      if (activeSession) {
+        const localSessions = activeSession instanceof Map
+          ? Array.from(activeSession.values())
+          : (Array.isArray(activeSession) ? activeSession : [activeSession]);
 
-      for (const sess of localSessions) {
-        if (sess && sess.targetNodeId === node.id) {
-          const livePoints = sess.getSmoothedPoints ? sess.getSmoothedPoints() : sess.rawPoints;
-          if (livePoints && livePoints.length >= 2) {
-            const liveStroke = {
-              points: livePoints,
-              color: sess.color,
-              baseWidth: sess.baseWidth,
-              brushType: sess.brushType,
+        for (const sess of localSessions) {
+          if (sess) {
+            const livePoints = sess.getSmoothedPoints ? sess.getSmoothedPoints() : sess.rawPoints;
+            if (livePoints && livePoints.length >= 2) {
+              const liveStroke = {
+                points: livePoints,
+                color: sess.color,
+                baseWidth: sess.baseWidth,
+                brushType: sess.brushType,
+              };
+              this.drawStroke(ctx, liveStroke, parentScreenTransform);
+            }
+          }
+        }
+      }
+
+      // 4. Render Remote Live In-Flight Strokes (Từ iPad/Tablet qua mạng LAN)
+      if (remoteSessions) {
+        const sessions = remoteSessions instanceof Map ? Array.from(remoteSessions.values()) : (Array.isArray(remoteSessions) ? remoteSessions : [remoteSessions]);
+        for (const rSession of sessions) {
+          if (rSession && rSession.points && rSession.points.length >= 2) {
+            const rStroke = {
+              points: rSession.points,
+              color: rSession.color || '#388bfd',
+              baseWidth: rSession.baseWidth || 3.0,
+              brushType: rSession.brushType || 'solid',
             };
-            this.drawStroke(ctx, liveStroke, innerContentScreenTransform);
+            this.drawStroke(ctx, rStroke, parentScreenTransform);
           }
         }
       }
     }
+  }
 
-    // Render Remote Live In-Flight Strokes (Nét vẽ trực tiếp từ iPad/Tablet)
-    if (remoteSessions) {
-      const sessions = remoteSessions instanceof Map ? Array.from(remoteSessions.values()) : (Array.isArray(remoteSessions) ? remoteSessions : [remoteSessions]);
-      for (const rSession of sessions) {
-        const matchesTarget = (rSession.targetNodeId === node.id) ||
-          (!rSession.targetNodeId && (node.id === 'root' || isRoot)) ||
-          (rSession.targetNodeId === 'root' && (node.id === 'root' || isRoot));
-        if (rSession && matchesTarget && rSession.points && rSession.points.length >= 2) {
-          const rStroke = {
-            points: rSession.points,
-            color: rSession.color || '#388bfd',
-            baseWidth: rSession.baseWidth || 3.0,
-            brushType: rSession.brushType || 'solid',
-          };
-          this.drawStroke(ctx, rStroke, innerContentScreenTransform);
+  drawImageNode(ctx, node, screenBounds, isSelected, zoom) {
+    const { minX, minY, width, height } = screenBounds;
+    const radius = 6;
+
+    // 1. Draw Image Content
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(minX, minY, width, height, radius);
+    ctx.clip();
+
+    try {
+      if (node.image instanceof HTMLImageElement || (typeof Image !== 'undefined' && node.image instanceof Image)) {
+        if (node.image.complete && node.image.naturalWidth > 0) {
+          ctx.drawImage(node.image, minX, minY, width, height);
+        } else {
+          ctx.fillStyle = '#161b22';
+          ctx.fillRect(minX, minY, width, height);
+          ctx.fillStyle = '#8b949e';
+          ctx.font = '500 13px "Outfit", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('🖼️ Đang tải ảnh...', minX + width * 0.5, minY + height * 0.5);
+
+          if (!node.image._hasLoadHandler) {
+            node.image._hasLoadHandler = true;
+            node.image.addEventListener('load', () => {
+              if (typeof CanvasNode.onImageLoaded === 'function') {
+                CanvasNode.onImageLoaded();
+              }
+            });
+          }
         }
+      } else if (typeof node.image === 'string') {
+        const img = new Image();
+        img.src = node.image;
+        node.image = img;
+        ctx.fillStyle = '#161b22';
+        ctx.fillRect(minX, minY, width, height);
+        ctx.fillStyle = '#8b949e';
+        ctx.font = '500 13px "Outfit", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('🖼️ Đang tải ảnh...', minX + width * 0.5, minY + height * 0.5);
+
+        img.onload = () => {
+          if (typeof CanvasNode.onImageLoaded === 'function') {
+            CanvasNode.onImageLoaded();
+          }
+        };
+      }
+    } catch (e) {
+      console.warn('[Renderer] Error drawing node.image:', e);
+    }
+    ctx.restore();
+
+    // 2. Selection border, Move Pill, and Resize Handles (App Mode only)
+    if (isSelected && !this.isDisplayMode) {
+      ctx.save();
+      // Selection outline
+      ctx.strokeStyle = '#58a6ff';
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      ctx.roundRect(minX, minY, width, height, radius);
+      ctx.stroke();
+
+      // Top floating pill for Dragging & Deleting
+      const pillH = 26;
+      const pillW = Math.min(width, 160);
+      const pillX = minX + (width - pillW) * 0.5;
+      const pillY = Math.max(8, minY - pillH - 6);
+
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+      ctx.beginPath();
+      ctx.roundRect(pillX, pillY, pillW, pillH, 6);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(88, 166, 255, 0.45)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Drag Grip & Title
+      ctx.fillStyle = '#e6edf3';
+      ctx.font = '500 11px "Outfit", sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      ctx.fillText('⋮⋮ Di chuyển', pillX + 10, pillY + pillH * 0.5);
+
+      // Close Button [✕] on pill
+      const closeBtnX = pillX + pillW - 14;
+      const closeBtnY = pillY + pillH * 0.5;
+      ctx.fillStyle = 'rgba(248, 81, 73, 0.25)';
+      ctx.beginPath();
+      ctx.arc(closeBtnX, closeBtnY, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#f85149';
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.moveTo(closeBtnX - 3, closeBtnY - 3);
+      ctx.lineTo(closeBtnX + 3, closeBtnY + 3);
+      ctx.moveTo(closeBtnX + 3, closeBtnY - 3);
+      ctx.lineTo(closeBtnX - 3, closeBtnY + 3);
+      ctx.stroke();
+
+      ctx.restore();
+
+      // Resize Handles
+      if (zoom > 0.15) {
+        this.drawResizeHandles(ctx, screenBounds);
+      }
+    }
+  }
+
+  drawGraphNode(ctx, node, screenBounds, isSelected, zoom) {
+    const { minX, minY, width, height } = screenBounds;
+    const radius = 8;
+    const theme = BOARD_THEMES[node.style] || BOARD_THEMES.chalkboard;
+    const headerH = Math.max(24, Math.min(30, 26 * Math.min(zoom, 1.2)));
+
+    // 1. Container Base & Shadow
+    ctx.save();
+    ctx.shadowColor = isSelected ? 'rgba(88, 166, 255, 0.35)' : 'rgba(0, 0, 0, 0.45)';
+    ctx.shadowBlur = (isSelected ? 24 : 14) * Math.min(zoom, 1.5);
+    ctx.shadowOffsetY = 4 * Math.min(zoom, 1.5);
+
+    ctx.fillStyle = theme.bg;
+    ctx.beginPath();
+    ctx.roundRect(minX, minY, width, height, radius);
+    ctx.fill();
+    ctx.restore();
+
+    // 2. Header Bar
+    ctx.fillStyle = isSelected ? theme.headerActiveBg : theme.headerBg;
+    ctx.beginPath();
+    ctx.roundRect(minX, minY, width, headerH, [radius, radius, 0, 0]);
+    ctx.fill();
+
+    ctx.strokeStyle = isSelected ? 'rgba(88, 166, 255, 0.4)' : theme.border;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(minX, minY + headerH);
+    ctx.lineTo(minX + width, minY + headerH);
+    ctx.stroke();
+
+    // Title & Buttons
+    const centerY = minY + headerH * 0.5;
+    ctx.fillStyle = isSelected ? '#ffffff' : theme.text;
+    ctx.font = `600 ${Math.max(11, Math.min(13, 12 * zoom))}px "Outfit", sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.fillText(`📈 ${node.name || 'Đồ Thị Hàm Số'}`, minX + 12, centerY, Math.max(40, width - 80));
+
+    if (!this.isDisplayMode) {
+      // Nút Xóa [✕]
+      const btnDelX = minX + width - 14;
+      ctx.fillStyle = isSelected ? 'rgba(248, 81, 73, 0.2)' : 'rgba(255, 255, 255, 0.08)';
+      ctx.beginPath();
+      ctx.roundRect(btnDelX - 8, centerY - 8, 16, 16, 4);
+      ctx.fill();
+      ctx.strokeStyle = isSelected ? '#f85149' : '#94a3b8';
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.moveTo(btnDelX - 2.5, centerY - 2.5);
+      ctx.lineTo(btnDelX + 2.5, centerY + 2.5);
+      ctx.moveTo(btnDelX + 2.5, centerY - 2.5);
+      ctx.lineTo(btnDelX - 2.5, centerY + 2.5);
+      ctx.stroke();
+
+      // Nút Chỉnh sửa hàm số [✎]
+      if (width >= 60) {
+        const btnEditX = minX + width - 36;
+        ctx.fillStyle = isSelected ? 'rgba(88, 166, 255, 0.2)' : 'rgba(255, 255, 255, 0.08)';
+        ctx.beginPath();
+        ctx.roundRect(btnEditX - 8, centerY - 8, 16, 16, 4);
+        ctx.fill();
+        ctx.strokeStyle = isSelected ? '#58a6ff' : '#94a3b8';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(btnEditX - 3, centerY + 3);
+        ctx.lineTo(btnEditX + 3, centerY - 3);
+        ctx.moveTo(btnEditX + 1, centerY - 4);
+        ctx.lineTo(btnEditX + 4, centerY - 1);
+        ctx.stroke();
       }
     }
 
-    // Render Nested Children Canvases (Bảng con lồng trong bảng mẹ)
-    for (const child of node.children) {
-      this.renderNode(
-        ctx,
-        child,
-        camera,
-        innerContentScreenTransform,
-        viewportFrustum,
-        effectiveScissor,
-        false,
-        selectedNodeId,
-        activeSession,
-        remoteSessions,
-        focusedContext
-      );
+    // 3. Graph Body (Math Coordinate Plane)
+    const bodyY = minY + headerH;
+    const bodyH = Math.max(0, height - headerH);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(minX, bodyY, width, bodyH, [0, 0, radius, radius]);
+    ctx.clip();
+
+    ctx.fillStyle = theme.graphBg;
+    ctx.fillRect(minX, bodyY, width, bodyH);
+
+    const gd = node.graphData;
+    const cameraZoom = zoom;
+    const graphZoom = node.contentZoom || 1.0;
+    const xSpan = (gd.xSpan || 20) / graphZoom;
+    const scaleX = width / xSpan;
+    const ySpan = bodyH / scaleX;
+
+    const panX = (node.contentPan ? node.contentPan.x : 0) * graphZoom * cameraZoom;
+    const panY = (node.contentPan ? node.contentPan.y : 0) * graphZoom * cameraZoom;
+    const originX = minX + width * 0.5 - panX;
+    const originY = bodyY + bodyH * 0.5 - panY;
+
+    const minMathX = (minX - originX) / scaleX;
+    const maxMathX = (minX + width - originX) / scaleX;
+    const minMathY = (originY - (bodyY + bodyH)) / scaleX;
+    const maxMathY = (originY - bodyY) / scaleX;
+
+    // Grid Lines
+    let unitStep = 1;
+    while (unitStep * scaleX < 24) unitStep *= 2;
+    while (unitStep * scaleX > 120) unitStep /= 2;
+
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = theme.graphGrid;
+    ctx.beginPath();
+    const subStep = unitStep / 5;
+    if (subStep * scaleX >= 8) {
+      for (let x = Math.floor(minMathX / subStep) * subStep; x <= maxMathX; x += subStep) {
+        const sx = originX + x * scaleX;
+        ctx.moveTo(sx, bodyY);
+        ctx.lineTo(sx, bodyY + bodyH);
+      }
+      for (let y = Math.floor(minMathY / subStep) * subStep; y <= maxMathY; y += subStep) {
+        const sy = originY - y * scaleX;
+        ctx.moveTo(minX, sy);
+        ctx.lineTo(minX + width, sy);
+      }
+    }
+    ctx.stroke();
+
+    ctx.strokeStyle = theme.graphGrid;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    for (let x = Math.floor(minMathX / unitStep) * unitStep; x <= maxMathX; x += unitStep) {
+      const sx = originX + x * scaleX;
+      ctx.moveTo(sx, bodyY);
+      ctx.lineTo(sx, bodyY + bodyH);
+    }
+    for (let y = Math.floor(minMathY / unitStep) * unitStep; y <= maxMathY; y += unitStep) {
+      const sy = originY - y * scaleX;
+      ctx.moveTo(minX, sy);
+      ctx.lineTo(minX + width, sy);
+    }
+    ctx.stroke();
+
+    // Axes
+    ctx.lineWidth = 2.0;
+    ctx.strokeStyle = theme.graphAxis;
+    ctx.beginPath();
+    if (originY >= bodyY && originY <= bodyY + bodyH) {
+      ctx.moveTo(minX, originY);
+      ctx.lineTo(minX + width, originY);
+    }
+    if (originX >= minX && originX <= minX + width) {
+      ctx.moveTo(originX, bodyY);
+      ctx.lineTo(originX, bodyY + bodyH);
+    }
+    ctx.stroke();
+
+    // Tick labels
+    ctx.fillStyle = theme.graphText;
+    ctx.font = '500 10px "Inter", sans-serif';
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'center';
+    for (let x = Math.floor(minMathX / unitStep) * unitStep; x <= maxMathX; x += unitStep) {
+      if (Math.abs(x) < 1e-6) continue;
+      const sx = originX + x * scaleX;
+      const labelY = Math.min(bodyY + bodyH - 14, Math.max(bodyY + 2, originY + 4));
+      ctx.fillText(Number(x.toFixed(2)), sx, labelY);
+    }
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let y = Math.floor(minMathY / unitStep) * unitStep; y <= maxMathY; y += unitStep) {
+      if (Math.abs(y) < 1e-6) continue;
+      const sy = originY - y * scaleX;
+      const labelX = Math.min(minX + width - 4, Math.max(minX + 24, originX - 4));
+      ctx.fillText(Number(y.toFixed(2)), labelX, sy);
     }
 
+    // Math curves
+    const expressions = gd.expressions || [];
+    const numSamples = Math.min(800, Math.max(100, Math.round(width * 1.2)));
+
+    for (const item of expressions) {
+      if (!item.visible || !item.expr) continue;
+      if (!item._compiledFn || item._compiledExpr !== item.expr) {
+        item._compiledFn = MathEvaluator.compile(item.expr);
+        item._compiledExpr = item.expr;
+      }
+      ctx.strokeStyle = item.color || '#58a6ff';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      let isFirst = true;
+      for (let i = 0; i <= numSamples; i++) {
+        const t = i / numSamples;
+        const mx = minMathX + t * (maxMathX - minMathX);
+        let my = null;
+        try {
+          my = item._compiledFn(mx, gd.params || {});
+        } catch (e) {
+          my = null;
+        }
+        if (my !== null && isFinite(my)) {
+          const sx = originX + mx * scaleX;
+          const sy = originY - my * scaleX;
+          if (isFirst) {
+            ctx.moveTo(sx, sy);
+            isFirst = false;
+          } else {
+            ctx.lineTo(sx, sy);
+          }
+        } else {
+          isFirst = true;
+        }
+      }
+      ctx.stroke();
+    }
+
+    // Formula tag badges
+    if (expressions.length > 0 && width > 180 && bodyH > 100) {
+      let tagY = bodyY + 12;
+      for (const item of expressions) {
+        if (!item.visible || !item.expr) continue;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.beginPath();
+        ctx.roundRect(minX + 10, tagY, Math.min(140, width - 20), 20, 4);
+        ctx.fill();
+
+        ctx.fillStyle = item.color || '#58a6ff';
+        ctx.beginPath();
+        ctx.arc(minX + 18, tagY + 10, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = theme.text;
+        ctx.font = '500 11px "Outfit", sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        let displayExpr = item.expr
+          .replace(/\\(lvert|rvert|vert)/g, '|')
+          .replace(/\\left|\\right/g, '')
+          .replace(/\\cdot/g, '·')
+          .replace(/\\times/g, '×');
+        ctx.fillText(`y = ${displayExpr}`, minX + 28, tagY + 10, 110);
+
+        tagY += 24;
+        if (tagY > bodyY + bodyH - 30) break;
+      }
+    }
     ctx.restore();
-    if (dimmedSaved) {
-      ctx.restore();
+
+    // 4. Outer border
+    ctx.strokeStyle = isSelected ? '#58a6ff' : theme.border;
+    ctx.lineWidth = isSelected ? 2.5 : 1.2;
+    ctx.beginPath();
+    ctx.roundRect(minX, minY, width, height, radius);
+    ctx.stroke();
+
+    // 5. Resize Handles
+    if (isSelected && zoom > 0.15) {
+      this.drawResizeHandles(ctx, screenBounds);
+    }
+  }
+
+  drawCanvasContainer(ctx, node, screenBounds, isSelected, zoom) {
+    if (node.image) {
+      this.drawImageNode(ctx, node, screenBounds, isSelected, zoom);
+    } else if (node.graphData) {
+      this.drawGraphNode(ctx, node, screenBounds, isSelected, zoom);
     }
   }
 
@@ -622,7 +896,7 @@ export class CanvasRenderer {
     const scale = Math.hypot(innerContentScreenTransform.a, innerContentScreenTransform.b) || 1.0;
     const baseFontSize = (node.textConfig?.fontSize || 16) * scale;
 
-    if (baseFontSize < 3) return; // Culled if too small
+    if (baseFontSize < 3) return;
 
     ctx.save();
     ctx.font = `500 ${baseFontSize}px ${node.textConfig?.font || 'Inter, sans-serif'}`;
@@ -654,590 +928,6 @@ export class CanvasRenderer {
       }
     }
     ctx.restore();
-  }
-
-  drawCanvasContainer(ctx, node, screenBounds, isSelected, zoom, isFocused = false) {
-    const { minX, minY, width, height } = screenBounds;
-    const radius = 8;
-    const theme = BOARD_THEMES[node.style] || BOARD_THEMES.chalkboard;
-    const headerH = Math.max(24, Math.min(32, 28 * Math.min(zoom, 1.2)));
-
-    // 1. Elevation Drop Shadow & Focus Glow Ring
-    ctx.save();
-    if (isFocused) {
-      ctx.shadowColor = 'rgba(188, 140, 255, 0.65)';
-      ctx.shadowBlur = 32 * Math.min(zoom, 1.5);
-      ctx.shadowOffsetY = 4 * Math.min(zoom, 1.5);
-    } else {
-      ctx.shadowColor = isSelected ? 'rgba(88, 166, 255, 0.35)' : 'rgba(0, 0, 0, 0.45)';
-      ctx.shadowBlur = (isSelected ? 28 : 16) * Math.min(zoom, 1.5);
-      ctx.shadowOffsetY = 6 * Math.min(zoom, 1.5);
-    }
-
-    // Board Base Background
-    ctx.fillStyle = theme.bg;
-    ctx.beginPath();
-    ctx.roundRect(minX, minY, width, height, radius);
-    ctx.fill();
-    ctx.restore();
-
-    // Focus Mode Highlight Ring on Container
-    if (isFocused) {
-      ctx.save();
-      ctx.strokeStyle = '#bc8cff';
-      ctx.lineWidth = Math.max(2.5, 3 * Math.min(zoom, 1.5));
-      ctx.beginPath();
-      ctx.roundRect(minX, minY, width, height, radius);
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    // 2. Clean Header Bar
-    ctx.fillStyle = isFocused ? 'rgba(188, 140, 255, 0.25)' : (isSelected ? theme.headerActiveBg : theme.headerBg);
-    ctx.beginPath();
-    ctx.roundRect(minX, minY, width, headerH, [radius, radius, 0, 0]);
-    ctx.fill();
-
-    // Header divider line
-    ctx.strokeStyle = isFocused ? '#bc8cff' : (isSelected ? 'rgba(88, 166, 255, 0.4)' : theme.border);
-    ctx.lineWidth = isFocused ? 1.5 : 1;
-    ctx.beginPath();
-    ctx.moveTo(minX, minY + headerH);
-    ctx.lineTo(minX + width, minY + headerH);
-    ctx.stroke();
-
-    // Header Content & Per-Board Action Toolbar
-    if (headerH > 10 && width > 30) {
-      const centerY = minY + headerH * 0.5;
-
-      // Active indicator dot (chỉ hiện trên App)
-      if (!this.isDisplayMode && width > 60) {
-        ctx.fillStyle = isFocused ? '#bc8cff' : (isSelected ? '#58a6ff' : theme.border);
-        ctx.beginPath();
-        ctx.arc(minX + 12, centerY, 3.5, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Title Text: Trên màn chiếu CHỈ hiển thị tên bảng tinh gọn, không kèm số kích thước
-      if (width > (this.isDisplayMode ? 20 : 120)) {
-        ctx.fillStyle = isFocused ? '#ffffff' : (isSelected ? '#ffffff' : theme.text);
-        ctx.font = `${isFocused || isSelected ? '600' : '500'} ${Math.max(11, Math.min(14, 12 * zoom))}px "Outfit", sans-serif`;
-        ctx.textBaseline = 'middle';
-        const startX = this.isDisplayMode ? minX + 14 : minX + 22;
-        const maxTitleW = this.isDisplayMode ? Math.max(20, width - 28) : Math.max(40, width - 180);
-        const rawTitle = this.isDisplayMode ? (node.name || 'Bảng') : (isFocused ? `🎯 [Tập Trung] ${node.name}` : `${node.name} (${Math.round(node.width)}×${Math.round(node.height)})`);
-        ctx.fillText(rawTitle, startX, centerY, maxTitleW);
-      }
-
-      // --- Per-Board Action Toolbar (Chỉ hiển thị trên App điều khiển, ẩn hoàn toàn trên Màn Chiếu PC) ---
-      if (!this.isDisplayMode) {
-        // 6. Nút Đóng / Xóa bảng (Delete Board ✕) - Luôn hiển thị
-        const btnDelX = minX + width - 12;
-        ctx.fillStyle = isSelected ? 'rgba(248, 81, 73, 0.2)' : 'rgba(255, 255, 255, 0.08)';
-      ctx.beginPath();
-      ctx.roundRect(btnDelX - 8, centerY - 8, 16, 16, 4);
-      ctx.fill();
-      ctx.strokeStyle = isSelected ? '#f85149' : '#94a3b8';
-      ctx.lineWidth = 1.3;
-      ctx.beginPath();
-      ctx.moveTo(btnDelX - 2.5, centerY - 2.5);
-      ctx.lineTo(btnDelX + 2.5, centerY + 2.5);
-      ctx.moveTo(btnDelX + 2.5, centerY - 2.5);
-      ctx.lineTo(btnDelX - 2.5, centerY + 2.5);
-      ctx.stroke();
-
-      // 5. Nút Chế Độ Tập Trung / Phóng To (Focus Mode 🎯 / ⛶)
-      if (width >= 56) {
-        const btnMaxX = minX + width - 34;
-        ctx.fillStyle = isFocused ? 'rgba(188, 140, 255, 0.35)' : (isSelected ? 'rgba(88, 166, 255, 0.18)' : 'rgba(255, 255, 255, 0.06)');
-        ctx.beginPath();
-        ctx.roundRect(btnMaxX - 8, centerY - 8, 16, 16, 4);
-        ctx.fill();
-        ctx.strokeStyle = isFocused ? '#d2a8ff' : (isSelected ? '#58a6ff' : '#94a3b8');
-        ctx.lineWidth = 1.3;
-        if (isFocused) {
-          // Icon Target Bullseye 🎯
-          ctx.beginPath();
-          ctx.arc(btnMaxX, centerY, 3.5, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.beginPath();
-          ctx.arc(btnMaxX, centerY, 1.2, 0, Math.PI * 2);
-          ctx.fillStyle = '#d2a8ff';
-          ctx.fill();
-        } else {
-          // Icon Focus Maximize ⛶
-          const s = 3;
-          ctx.beginPath();
-          ctx.moveTo(btnMaxX - s, centerY - s + 2);
-          ctx.lineTo(btnMaxX - s, centerY - s);
-          ctx.lineTo(btnMaxX - s + 2, centerY - s);
-          ctx.moveTo(btnMaxX + s, centerY - s + 2);
-          ctx.lineTo(btnMaxX + s, centerY - s);
-          ctx.lineTo(btnMaxX + s - 2, centerY - s);
-          ctx.moveTo(btnMaxX - s, centerY + s - 2);
-          ctx.lineTo(btnMaxX - s, centerY + s);
-          ctx.lineTo(btnMaxX - s + 2, centerY + s);
-          ctx.moveTo(btnMaxX + s, centerY + s - 2);
-          ctx.lineTo(btnMaxX + s, centerY + s);
-          ctx.lineTo(btnMaxX + s - 2, centerY + s);
-          ctx.stroke();
-        }
-      }
-
-      // 4. Nút Xóa sạch nét bảng (Clear Strokes 🗑️)
-      if (width >= 80) {
-        const btnClrX = minX + width - 56;
-        ctx.fillStyle = isSelected ? 'rgba(240, 136, 62, 0.15)' : 'rgba(255, 255, 255, 0.06)';
-        ctx.beginPath();
-        ctx.roundRect(btnClrX - 8, centerY - 8, 16, 16, 4);
-        ctx.fill();
-        ctx.strokeStyle = isSelected ? '#f0883e' : '#94a3b8';
-        ctx.lineWidth = 1.3;
-        ctx.beginPath();
-        ctx.rect(btnClrX - 3, centerY - 2.5, 6, 6);
-        ctx.moveTo(btnClrX - 4.5, centerY - 2.5);
-        ctx.lineTo(btnClrX + 4.5, centerY - 2.5);
-        ctx.stroke();
-      }
-
-      // 3. Nút Redo riêng của bảng (↷)
-      if (width >= 104) {
-        const canRedo = node.history && node.history.canRedo();
-        const btnRedoX = minX + width - 78;
-        ctx.fillStyle = isSelected ? 'rgba(88, 166, 255, 0.18)' : 'rgba(255, 255, 255, 0.06)';
-        ctx.beginPath();
-        ctx.roundRect(btnRedoX - 8, centerY - 8, 16, 16, 4);
-        ctx.fill();
-        ctx.strokeStyle = canRedo ? (isSelected ? '#58a6ff' : '#e6edf3') : '#6e7681';
-        ctx.lineWidth = 1.3;
-        ctx.beginPath();
-        ctx.arc(btnRedoX - 1, centerY, 3, Math.PI * 1.2, Math.PI * 0.5);
-        ctx.moveTo(btnRedoX + 3, centerY - 2);
-        ctx.lineTo(btnRedoX + 1, centerY - 3.5);
-        ctx.lineTo(btnRedoX + 1, centerY - 1);
-        ctx.stroke();
-      }
-
-      // 2. Nút Undo riêng của bảng (↶)
-      if (width >= 128) {
-        const canUndo = node.history && node.history.canUndo();
-        const btnUndoX = minX + width - 100;
-        ctx.fillStyle = isSelected ? 'rgba(88, 166, 255, 0.18)' : 'rgba(255, 255, 255, 0.06)';
-        ctx.beginPath();
-        ctx.roundRect(btnUndoX - 8, centerY - 8, 16, 16, 4);
-        ctx.fill();
-        ctx.strokeStyle = canUndo ? (isSelected ? '#58a6ff' : '#e6edf3') : '#6e7681';
-        ctx.lineWidth = 1.3;
-        ctx.beginPath();
-        ctx.arc(btnUndoX + 1, centerY, 3, Math.PI * 0.5, Math.PI * 1.8);
-        ctx.moveTo(btnUndoX - 3, centerY - 2);
-        ctx.lineTo(btnUndoX - 1, centerY - 3.5);
-        ctx.lineTo(btnUndoX - 1, centerY - 1);
-        ctx.stroke();
-      }
-
-      // 1. Nút Chèn Ảnh (Insert Image 🖼️)
-      if (width >= 152) {
-        const btnImgX = minX + width - 122;
-        ctx.fillStyle = isSelected ? 'rgba(188, 140, 255, 0.18)' : 'rgba(255, 255, 255, 0.06)';
-        ctx.beginPath();
-        ctx.roundRect(btnImgX - 8, centerY - 8, 16, 16, 4);
-        ctx.fill();
-        ctx.strokeStyle = isSelected ? '#bc8cff' : '#94a3b8';
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.rect(btnImgX - 4, centerY - 3.5, 8, 7);
-        ctx.moveTo(btnImgX - 4, centerY + 1);
-        ctx.lineTo(btnImgX - 1.5, centerY - 1);
-        ctx.lineTo(btnImgX + 1, centerY + 0.5);
-        ctx.lineTo(btnImgX + 4, centerY - 2);
-        ctx.stroke();
-      }
-
-      // 0. Nút Chia Sẻ Bảng Qua Socket LAN (Share Board 📡)
-      if (width >= 170) {
-        const btnShareX = minX + width - 144;
-        const isShared = !!node.isShared;
-        ctx.fillStyle = isShared ? 'rgba(63, 185, 80, 0.25)' : (isSelected ? 'rgba(88, 166, 255, 0.18)' : 'rgba(255, 255, 255, 0.06)');
-        ctx.beginPath();
-        ctx.roundRect(btnShareX - 8, centerY - 8, 16, 16, 4);
-        ctx.fill();
-
-        ctx.strokeStyle = isShared ? '#3fb950' : (isSelected ? '#58a6ff' : '#94a3b8');
-        ctx.lineWidth = 1.2;
-
-        // Vẽ biểu tượng sóng phát tín hiệu Wi-Fi / Socket
-        ctx.beginPath();
-        // Tâm phát sóng
-        ctx.arc(btnShareX, centerY + 2.5, 1.2, 0, Math.PI * 2);
-        ctx.fillStyle = isShared ? '#3fb950' : (isSelected ? '#58a6ff' : '#94a3b8');
-        ctx.fill();
-
-        // Cung sóng trong
-        ctx.beginPath();
-        ctx.arc(btnShareX, centerY + 2.5, 3.5, -Math.PI * 0.8, -Math.PI * 0.2);
-        ctx.stroke();
-
-        // Cung sóng ngoài
-        ctx.beginPath();
-        ctx.arc(btnShareX, centerY + 2.5, 5.5, -Math.PI * 0.85, -Math.PI * 0.15);
-        ctx.stroke();
-
-        // Nếu đang chia sẻ: thêm chấm tròn xanh phát sáng báo trạng thái LIVE
-        if (isShared) {
-          ctx.beginPath();
-          ctx.arc(btnShareX + 5, centerY - 5, 2.5, 0, Math.PI * 2);
-          ctx.fillStyle = '#3fb950';
-          ctx.fill();
-        }
-      }
-
-      // -1. Nút Thêm Bảng Con Lồng Bên Trong (Add Child Board ＋📋)
-      if (width >= 194) {
-        const btnAddChildX = minX + width - 166;
-        ctx.fillStyle = isSelected ? 'rgba(56, 139, 253, 0.18)' : 'rgba(255, 255, 255, 0.06)';
-        ctx.beginPath();
-        ctx.roundRect(btnAddChildX - 8, centerY - 8, 16, 16, 4);
-        ctx.fill();
-
-        ctx.strokeStyle = isSelected ? '#58a6ff' : '#94a3b8';
-        ctx.lineWidth = 1.3;
-        ctx.beginPath();
-        ctx.moveTo(btnAddChildX - 4, centerY);
-        ctx.lineTo(btnAddChildX + 4, centerY);
-        ctx.moveTo(btnAddChildX, centerY - 4);
-        ctx.lineTo(btnAddChildX, centerY + 4);
-        ctx.stroke();
-      }
-
-      // -2. Nút Thêm Đồ Thị Con Lồng Bên Trong (Add Graph Board ＋📈)
-      if (width >= 218) {
-        const btnAddGraphX = minX + width - 188;
-        ctx.fillStyle = isSelected ? 'rgba(63, 185, 80, 0.18)' : 'rgba(255, 255, 255, 0.06)';
-        ctx.beginPath();
-        ctx.roundRect(btnAddGraphX - 8, centerY - 8, 16, 16, 4);
-        ctx.fill();
-
-        ctx.strokeStyle = isSelected ? '#3fb950' : '#94a3b8';
-        ctx.lineWidth = 1.3;
-        ctx.beginPath();
-        ctx.moveTo(btnAddGraphX - 4.5, centerY - 3.5);
-        ctx.lineTo(btnAddGraphX - 4.5, centerY + 3.5);
-        ctx.lineTo(btnAddGraphX + 4.5, centerY + 3.5);
-        ctx.moveTo(btnAddGraphX - 3.5, centerY + 1);
-        ctx.quadraticCurveTo(btnAddGraphX, centerY + 3.5, btnAddGraphX + 3.5, centerY - 2.5);
-        ctx.stroke();
-      }
-      }
-    }
-
-    // 3. Board Inner Writing Area (Lưới Ô Ly Toạ Độ hoặc Hình Ảnh nền)
-    const bodyY = minY + headerH;
-    const bodyH = Math.max(0, height - headerH);
-
-    ctx.save();
-    if (node.graphData) {
-      // --- BẢNG VẼ ĐỒ THỊ TOÁN HỌC ---
-      ctx.beginPath();
-      ctx.roundRect(minX, bodyY, width, bodyH, [0, 0, radius, radius]);
-      ctx.clip();
-
-      // Nền đồ thị đồng bộ theo Theme
-      ctx.fillStyle = theme.graphBg;
-      ctx.fillRect(minX, bodyY, width, bodyH);
-
-      const gd = node.graphData;
-      const cameraZoom = zoom;
-      const graphZoom = node.contentZoom || 1.0;
-      const xSpan = (gd.xSpan || 20) / graphZoom;
-      const scaleX = width / xSpan;
-      const ySpan = bodyH / scaleX;
-
-      const panX = (node.contentPan ? node.contentPan.x : 0) * graphZoom * cameraZoom;
-      const panY = (node.contentPan ? node.contentPan.y : 0) * graphZoom * cameraZoom;
-      const originX = minX + width * 0.5 - panX;
-      const originY = bodyY + bodyH * 0.5 - panY;
-
-      const minMathX = (minX - originX) / scaleX;
-      const maxMathX = (minX + width - originX) / scaleX;
-      const minMathY = (originY - (bodyY + bodyH)) / scaleX;
-      const maxMathY = (originY - bodyY) / scaleX;
-
-      // 1. Vẽ Lưới Toạ độ Phụ & Chính (Grid Lines)
-      let unitStep = 1;
-      while (unitStep * scaleX < 24) unitStep *= 2;
-      while (unitStep * scaleX > 120) unitStep /= 2;
-
-      ctx.lineWidth = 1;
-      // Lưới phụ
-      ctx.strokeStyle = theme.graphGrid;
-      ctx.beginPath();
-      const subStep = unitStep / 5;
-      if (subStep * scaleX >= 8) {
-        for (let x = Math.floor(minMathX / subStep) * subStep; x <= maxMathX; x += subStep) {
-          const sx = originX + x * scaleX;
-          ctx.moveTo(sx, bodyY);
-          ctx.lineTo(sx, bodyY + bodyH);
-        }
-        for (let y = Math.floor(minMathY / subStep) * subStep; y <= maxMathY; y += subStep) {
-          const sy = originY - y * scaleX;
-          ctx.moveTo(minX, sy);
-          ctx.lineTo(minX + width, sy);
-        }
-      }
-      ctx.stroke();
-
-      // Lưới chính
-      ctx.strokeStyle = theme.graphGrid;
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      for (let x = Math.floor(minMathX / unitStep) * unitStep; x <= maxMathX; x += unitStep) {
-        const sx = originX + x * scaleX;
-        ctx.moveTo(sx, bodyY);
-        ctx.lineTo(sx, bodyY + bodyH);
-      }
-      for (let y = Math.floor(minMathY / unitStep) * unitStep; y <= maxMathY; y += unitStep) {
-        const sy = originY - y * scaleX;
-        ctx.moveTo(minX, sy);
-        ctx.lineTo(minX + width, sy);
-      }
-      ctx.stroke();
-
-      // 2. Vẽ 2 Trục Toạ Độ Chính Ox và Oy (Bold Axes)
-      ctx.lineWidth = 2.0;
-      ctx.strokeStyle = theme.graphAxis;
-      ctx.beginPath();
-      // Trục hoành Ox
-      if (originY >= bodyY && originY <= bodyY + bodyH) {
-        ctx.moveTo(minX, originY);
-        ctx.lineTo(minX + width, originY);
-      }
-      // Trục tung Oy
-      if (originX >= minX && originX <= minX + width) {
-        ctx.moveTo(originX, bodyY);
-        ctx.lineTo(originX, bodyY + bodyH);
-      }
-      ctx.stroke();
-
-      // 3. Số toạ độ trên các vạch chia (Tick Numbers)
-      ctx.fillStyle = theme.graphText;
-      ctx.font = '500 10px "Inter", sans-serif';
-      ctx.textBaseline = 'top';
-      ctx.textAlign = 'center';
-
-      for (let x = Math.floor(minMathX / unitStep) * unitStep; x <= maxMathX; x += unitStep) {
-        if (Math.abs(x) < 1e-6) continue;
-        const sx = originX + x * scaleX;
-        const labelY = Math.min(bodyY + bodyH - 14, Math.max(bodyY + 2, originY + 4));
-        ctx.fillText(Number(x.toFixed(2)), sx, labelY);
-      }
-
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'middle';
-      for (let y = Math.floor(minMathY / unitStep) * unitStep; y <= maxMathY; y += unitStep) {
-        if (Math.abs(y) < 1e-6) continue;
-        const sy = originY - y * scaleX;
-        const labelX = Math.min(minX + width - 4, Math.max(minX + 24, originX - 4));
-        ctx.fillText(Number(y.toFixed(2)), labelX, sy);
-      }
-
-      // 4. Vẽ các đường cong hàm số toán học (Math Curves)
-      const expressions = gd.expressions || [];
-      const numSamples = Math.min(800, Math.max(100, Math.round(width * 1.2)));
-
-      for (const item of expressions) {
-        if (!item.visible || !item.expr) continue;
-        if (!item._compiledFn || item._compiledExpr !== item.expr) {
-          item._compiledFn = MathEvaluator.compile(item.expr);
-          item._compiledExpr = item.expr;
-        }
-
-        ctx.strokeStyle = item.color || '#58a6ff';
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        let isFirst = true;
-
-        for (let i = 0; i <= numSamples; i++) {
-          const t = i / numSamples;
-          const mx = minMathX + t * (maxMathX - minMathX);
-          let my = null;
-          try {
-            my = item._compiledFn(mx, gd.params || {});
-          } catch (e) {
-            my = null;
-          }
-
-          if (my !== null && isFinite(my)) {
-            const sx = originX + mx * scaleX;
-            const sy = originY - my * scaleX;
-            if (isFirst) {
-              ctx.moveTo(sx, sy);
-              isFirst = false;
-            } else {
-              ctx.lineTo(sx, sy);
-            }
-          } else {
-            isFirst = true;
-          }
-        }
-        ctx.stroke();
-      }
-
-      // 5. Hiển thị Tags tên hàm số ở góc trái
-      if (expressions.length > 0 && width > 180 && bodyH > 100) {
-        let tagY = bodyY + 12;
-        for (const item of expressions) {
-          if (!item.visible || !item.expr) continue;
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-          ctx.beginPath();
-          ctx.roundRect(minX + 10, tagY, Math.min(140, width - 20), 20, 4);
-          ctx.fill();
-
-          ctx.fillStyle = item.color || '#58a6ff';
-          ctx.beginPath();
-          ctx.arc(minX + 18, tagY + 10, 4, 0, Math.PI * 2);
-          ctx.fill();
-
-          ctx.fillStyle = theme.text;
-          ctx.font = '500 11px "Outfit", sans-serif';
-          ctx.textAlign = 'left';
-          ctx.textBaseline = 'middle';
-          let displayExpr = item.expr
-            .replace(/\\(lvert|rvert|vert)/g, '|')
-            .replace(/\\left|\\right/g, '')
-            .replace(/\\cdot/g, '·')
-            .replace(/\\times/g, '×');
-          ctx.fillText(`y = ${displayExpr}`, minX + 28, tagY + 10, 110);
-
-          tagY += 24;
-          if (tagY > bodyY + bodyH - 30) break;
-        }
-      }
-    } else if (node.image) {
-      // Bảng con là Ảnh -> Vẽ hình ảnh lấp đầy thân bảng
-      ctx.beginPath();
-      ctx.roundRect(minX, bodyY, width, bodyH, [0, 0, radius, radius]);
-      ctx.clip();
-      ctx.fillStyle = '#0d1117';
-      ctx.fillRect(minX, bodyY, width, bodyH);
-      try {
-        if (node.image instanceof HTMLImageElement || (typeof Image !== 'undefined' && node.image instanceof Image)) {
-          if (node.image.complete && node.image.naturalWidth > 0) {
-            ctx.drawImage(node.image, minX, bodyY, width, bodyH);
-          } else {
-            // Placeholder trong lúc ảnh đang giải mã / tải
-            ctx.fillStyle = '#161b22';
-            ctx.fillRect(minX, bodyY, width, bodyH);
-            ctx.fillStyle = '#8b949e';
-            ctx.font = '500 13px "Outfit", -apple-system, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText('🖼️ Đang tải ảnh...', minX + width * 0.5, bodyY + bodyH * 0.5);
-
-            if (!node.image._hasLoadHandler) {
-              node.image._hasLoadHandler = true;
-              node.image.addEventListener('load', () => {
-                if (typeof CanvasNode.onImageLoaded === 'function') {
-                  CanvasNode.onImageLoaded();
-                }
-              });
-            }
-          }
-        } else if (typeof node.image === 'string') {
-          const img = new Image();
-          img.src = node.image;
-          node.image = img;
-          ctx.fillStyle = '#161b22';
-          ctx.fillRect(minX, bodyY, width, bodyH);
-          ctx.fillStyle = '#8b949e';
-          ctx.font = '500 13px "Outfit", -apple-system, sans-serif';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText('🖼️ Đang tải ảnh...', minX + width * 0.5, bodyY + bodyH * 0.5);
-
-          img.onload = () => {
-            if (typeof CanvasNode.onImageLoaded === 'function') {
-              CanvasNode.onImageLoaded();
-            }
-          };
-        } else {
-          ctx.drawImage(node.image, minX, bodyY, width, bodyH);
-        }
-      } catch (e) {
-        console.warn('[Renderer] Error drawing node.image:', e);
-      }
-    } else {
-      // Bảng con thông thường -> Vẽ Nền và Lưới theo Theme & GridType
-      ctx.fillStyle = theme.bg;
-      ctx.beginPath();
-      ctx.roundRect(minX, bodyY, width, bodyH, [0, 0, radius, radius]);
-      ctx.fill();
-
-      // Vẽ Lưới Nền (Grid Lines / Dots / Ruled Lines / Blank)
-      const effectiveZoom = zoom * (node.contentZoom || 1.0);
-      const gridType = node.gridType || 'grid';
-
-      if (gridType !== 'none' && effectiveZoom > 0.15) {
-        let step = 28 * effectiveZoom;
-        while (step < 16) step *= 2;
-        while (step > 64) step /= 2;
-        const panX = node.contentPan ? node.contentPan.x : 0;
-        const panY = node.contentPan ? node.contentPan.y : 0;
-        const startX = minX + (((-panX * zoom) % step + step) % step);
-        const startY = bodyY + (((-panY * zoom) % step + step) % step);
-
-        if (gridType === 'dots') {
-          // 1. Lưới Chấm Bi Toạ Độ
-          ctx.fillStyle = theme.grid;
-          const dotR = effectiveZoom > 1.2 ? 1.2 : 0.9;
-          ctx.beginPath();
-          for (let x = startX; x < minX + width; x += step) {
-            for (let y = startY; y < bodyY + bodyH; y += step) {
-              ctx.moveTo(x + dotR, y);
-              ctx.arc(x, y, dotR, 0, Math.PI * 2);
-            }
-          }
-          ctx.fill();
-        } else if (gridType === 'lines') {
-          // 2. Dòng Kẻ Ngang Tập Vở Học Sinh (Ruled Lines)
-          ctx.strokeStyle = theme.grid;
-          ctx.lineWidth = 0.8;
-          ctx.beginPath();
-          for (let y = startY; y < bodyY + bodyH; y += step) {
-            ctx.moveTo(minX, y);
-            ctx.lineTo(minX + width, y);
-          }
-          ctx.stroke();
-        } else {
-          // 3. Lưới Ô Vuông Caro 5x5mm Tiêu Chuẩn (Squared Grid)
-          ctx.strokeStyle = theme.grid;
-          ctx.lineWidth = 0.8;
-          ctx.beginPath();
-          for (let x = startX; x < minX + width; x += step) {
-            ctx.moveTo(x, bodyY);
-            ctx.lineTo(x, bodyY + bodyH);
-          }
-          for (let y = startY; y < bodyY + bodyH; y += step) {
-            ctx.moveTo(minX, y);
-            ctx.lineTo(minX + width, y);
-          }
-          ctx.stroke();
-        }
-      }
-    }
-    ctx.restore();
-
-    // 4. Viền khung bảng ngoài cùng
-    ctx.strokeStyle = isSelected ? '#58a6ff' : theme.border;
-    ctx.lineWidth = isSelected ? 2.5 : 1.2;
-    ctx.beginPath();
-    ctx.roundRect(minX, minY, width, height, radius);
-    ctx.stroke();
-
-    // 5. Resize Handles on Selected Board
-    if (isSelected && zoom > 0.2) {
-      this.drawResizeHandles(ctx, screenBounds);
-    }
   }
 
   drawResizeHandles(ctx, bounds) {
