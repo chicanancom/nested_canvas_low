@@ -53,6 +53,20 @@
         </svg>
       </button>
 
+      <!-- Nút Lưu Bài Giảng Thủ Công -->
+      <button id="btn-save-workspace" class="btn-action"
+        style="color:#3fb950; border-color:rgba(63,185,80,0.4); background:rgba(63,185,80,0.08); display:flex; align-items:center; gap:6px; font-weight:600; padding:6px 12px; margin-left:4px;"
+        title="Lưu bài giảng vào máy (Ctrl+S)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+          <polyline points="17 21 17 13 7 13 7 21"></polyline>
+          <polyline points="7 3 7 8 15 8"></polyline>
+        </svg>
+        <span id="dot-unsaved-changes"
+          style="visibility:hidden; width:7px; height:7px; border-radius:50%; background:#f0883e; flex-shrink:0;"
+          title="Có thay đổi chưa lưu"></span>
+      </button>
+
       <!-- Nút Mở Mục Lục Cây Phân Cấp (Đặc biệt hữu ích trên Điện Thoại) -->
       <button id="btn-toggle-inspector" class="btn-action" style="color:#58a6ff; border-color:rgba(88,166,255,0.4);"
         title="Mở danh mục cây phân cấp & thuộc tính bảng">
@@ -607,7 +621,7 @@
               8765</span>
           </div>
           <div style="display: flex; gap: 8px;">
-            <input type="text" id="input-server-host" placeholder="Ví dụ: 192.168.1.121"
+            <input type="text" id="input-server-host" placeholder="Ví dụ: 192.168.1.25"
               style="flex: 1; background: #0d1117; border: 1px solid var(--border-subtle); color: #58a6ff; font-family: monospace; font-size: 12.5px; padding: 7px 10px; border-radius: 6px; font-weight: 600;" />
             <button id="btn-save-server-host" class="btn-action primary"
               style="white-space: nowrap; padding: 7px 14px; font-size: 12px; cursor: pointer;">Lưu & Kết Nối</button>
@@ -636,7 +650,11 @@
 
     <!-- MÀN HÌNH CHỜ ĐỒNG BỘ BẮT BUỘC TRÊN MOBILE (SYNC GATE OVERLAY) -->
     <div id="mobile-sync-gate-overlay" class="sync-gate-overlay" style="display: none;">
-      <div class="sync-gate-card glass-panel">
+      <div class="sync-gate-card glass-panel" style="position: relative;">
+        <!-- Nút đóng nhanh -->
+        <button id="btn-close-sync-gate" class="btn-icon-sm"
+          style="position: absolute; top: 12px; right: 12px; font-size: 16px; cursor: pointer; color: #8b949e; background: transparent; border: none; z-index: 10;">✕</button>
+
         <!-- Logo & Animation Radar Scan -->
         <div class="sync-gate-radar-wrap">
           <div class="sync-gate-radar-wave wave-1"></div>
@@ -648,8 +666,9 @@
         </div>
 
         <div class="sync-gate-header">
-          <h2 class="sync-gate-title" id="sync-gate-title">Đang Quét Tìm Máy Tính PC</h2>
-          <p class="sync-gate-desc" id="sync-gate-desc">Tự động dò IP động trong mạng Wi-Fi và đồng bộ bài giảng từ PC về điện thoại...</p>
+          <h2 class="sync-gate-title" id="sync-gate-title">Kết Nối Màn Hình Tương Tác</h2>
+          <p class="sync-gate-desc" id="sync-gate-desc">Tự động phát hiện và kết nối với Màn hình tương tác qua mạng
+            Wi-Fi...</p>
         </div>
 
         <!-- Live Scanning Indicator -->
@@ -663,26 +682,29 @@
           </div>
         </div>
 
-        <!-- Hộp trợ giúp / Thao tác khi chưa tìm thấy PC -->
+        <!-- Hộp trợ giúp / Thao tác khi chưa tìm thấy màn hình -->
         <div class="sync-gate-fallback" id="sync-gate-fallback" style="display: none;">
           <div class="sync-gate-alert">
-            <span>⚠️ Chưa tìm thấy PC. Hãy kiểm tra điện thoại và máy tính đã kết nối chung 1 mạng Wi-Fi chưa.</span>
+            <span>⚠️ Chưa tìm thấy Màn hình tương tác. Hãy kiểm tra điện thoại và màn hình đã kết nối cùng mạng Wi-Fi
+              chưa.</span>
           </div>
 
           <div class="sync-gate-input-group">
-            <input type="text" id="sync-gate-manual-ip" placeholder="Nhập IP PC (vd: 192.168.1.121)" />
-            <button id="sync-gate-btn-connect-ip" class="btn-action primary" style="padding: 8px 14px; font-size: 12px; cursor: pointer; white-space: nowrap;">Kết Nối</button>
+            <input type="text" id="sync-gate-manual-ip" placeholder="Nhập IP màn hình (vd: 192.168.1.25)" />
+            <button id="sync-gate-btn-connect-ip" class="btn-action primary"
+              style="padding: 8px 14px; font-size: 12px; cursor: pointer; white-space: nowrap;">Kết Nối</button>
           </div>
 
-          <button id="sync-gate-btn-rescan" class="btn-action" style="width: 100%; justify-content: center; padding: 9px 14px; font-size: 12.5px; background: rgba(88,166,255,0.15); color: #58a6ff; border: 1px solid rgba(88,166,255,0.35); font-weight: 600; cursor: pointer;">
+          <button id="sync-gate-btn-rescan" class="btn-action"
+            style="width: 100%; justify-content: center; padding: 9px 14px; font-size: 12.5px; background: rgba(88,166,255,0.15); color: #58a6ff; border: 1px solid rgba(88,166,255,0.35); font-weight: 600; cursor: pointer;">
             <span>🔄</span> Quét Lại Mạng Wi-Fi
           </button>
         </div>
 
-        <!-- Nút dự phòng: Mở ngoại tuyến -->
+        <!-- Nút dự phòng: Đóng tiếp tục vẽ -->
         <div class="sync-gate-footer">
-          <button id="sync-gate-btn-offline" class="sync-gate-link-btn" title="Vào vẽ độc lập không đồng bộ với PC">
-            Mở ở chế độ Ngoại Tuyến (Offline) →
+          <button id="sync-gate-btn-offline" class="sync-gate-link-btn" title="Vẽ bình thường mà không cần chờ kết nối">
+            Đóng lại (Tiếp tục vẽ) →
           </button>
         </div>
       </div>
@@ -1069,6 +1091,33 @@
             style="padding: 6px 12px; font-size: 12px; cursor: pointer;">Hủy</button>
           <button id="btn-confirm-session-prompt" class="btn-action primary"
             style="padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;">Xác Nhận</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Xác Nhận Lưu Khi Thoát App / Rời Trang -->
+    <div class="math-ocr-modal" id="modal-unsaved-confirm"
+      style="display:none; align-items:center; justify-content:center; z-index: 10001;">
+      <div class="glass-panel"
+        style="width: 400px; max-width: 92vw; padding: 24px; border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,0.9); border: 1px solid rgba(240,136,62,0.4); backdrop-filter: blur(24px); background: rgba(13, 17, 23, 0.98); display: flex; flex-direction: column; gap: 14px; text-align: center;">
+        <div style="font-size: 38px; line-height: 1;">💾</div>
+        <div style="font-weight: 700; font-size: 16px; color: #f0f6fc;">Bạn có thay đổi chưa lưu!</div>
+        <p style="font-size: 13px; color: #8b949e; line-height: 1.5; margin: 0;">
+          Bài giảng hiện tại có nét vẽ hoặc bảng mới chưa được lưu lại. Bạn có muốn lưu trước khi đóng ứng dụng không?
+        </p>
+        <div style="display: flex; gap: 8px; justify-content: center; margin-top: 6px; flex-wrap: wrap;">
+          <button id="btn-unsaved-save-exit" class="btn-action primary"
+            style="background: #238636; border-color: #2ea043; color: #fff; font-weight: 600; padding: 8px 16px; font-size: 13px; cursor: pointer;">
+            💾 Lưu & Thoát
+          </button>
+          <button id="btn-unsaved-discard-exit" class="btn-action"
+            style="background: rgba(248,81,73,0.12); border-color: rgba(248,81,73,0.4); color: #f85149; font-weight: 500; padding: 8px 14px; font-size: 13px; cursor: pointer;">
+            Không Lưu
+          </button>
+          <button id="btn-unsaved-cancel" class="btn-action"
+            style="background: transparent; border-color: #30363d; color: #8b949e; padding: 8px 14px; font-size: 13px; cursor: pointer;">
+            Hủy
+          </button>
         </div>
       </div>
     </div>

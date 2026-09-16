@@ -30,6 +30,24 @@ export function getLocalIp() {
   return '127.0.0.1';
 }
 
+export function getBroadcastAddresses() {
+  const broadcasts = new Set(['255.255.255.255']);
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const net of ifaces[name]) {
+      if (net.family === 'IPv4' && !net.internal && net.address) {
+        try {
+          const ipParts = net.address.split('.').map(Number);
+          const maskParts = (net.netmask || '255.255.255.0').split('.').map(Number);
+          const bcastParts = ipParts.map((p, i) => (p | (~maskParts[i] & 255)));
+          broadcasts.add(bcastParts.join('.'));
+        } catch (e) {}
+      }
+    }
+  }
+  return Array.from(broadcasts);
+}
+
 export function startSyncServer(port = 8765) {
   // In-memory storage for shared boards and rooms
   // board_states: Map<boardId, nodeData>
@@ -51,6 +69,11 @@ export function startSyncServer(port = 8765) {
   let lastCanvasScene = null;
   let lastCanvasCamera = null;
 
+  // Active session tracking across all clients
+  let currentActiveSessionId = null;
+  let currentActiveSessionMeta = null;
+  let currentActiveSessionContent = null;
+
   let _saveStateTimer = null;
   function scheduleSaveState() {
     if (_saveStateTimer) clearTimeout(_saveStateTimer);
@@ -63,6 +86,7 @@ export function startSyncServer(port = 8765) {
           lastCastCameraSync,
           lastCanvasScene,
           lastCanvasCamera,
+          currentActiveSessionId,
           boardStates: Array.from(boardStates.entries()),
           sharedBoards: Array.from(sharedBoards.entries()),
           savedAt: Date.now(),
@@ -85,14 +109,49 @@ export function startSyncServer(port = 8765) {
         if (data.lastCastCameraSync) lastCastCameraSync = data.lastCastCameraSync;
         if (data.lastCanvasScene) lastCanvasScene = data.lastCanvasScene;
         if (data.lastCanvasCamera) lastCanvasCamera = data.lastCanvasCamera;
+        if (data.currentActiveSessionId) currentActiveSessionId = data.currentActiveSessionId;
         if (Array.isArray(data.boardStates)) {
           for (const [k, v] of data.boardStates) boardStates.set(k, v);
         }
         if (Array.isArray(data.sharedBoards)) {
           for (const [k, v] of data.sharedBoards) sharedBoards.set(k, v);
         }
-        console.log(`[SyncServer] 💾 Restored persistent state: Cast board = ${currentCastBoardNode?.name || currentCastBoardId || 'none'}, Canvas Mirror = ${lastCanvasScene ? 'Ready' : 'None'}`);
       }
+
+      // Restore active session details from disk
+      const sessionsDir = path.join(__dirname, 'data', 'sessions');
+      if (currentActiveSessionId) {
+        const sessionFile = path.join(sessionsDir, `${currentActiveSessionId}.json`);
+        if (fs.existsSync(sessionFile)) {
+          try {
+            const sData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+            currentActiveSessionMeta = sData.meta;
+            currentActiveSessionContent = sData.content;
+          } catch (e) {}
+        }
+      }
+      if (!currentActiveSessionContent && fs.existsSync(sessionsDir)) {
+        const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
+        if (files.length > 0) {
+          const sorted = files.map(f => ({
+            file: f,
+            mtime: fs.statSync(path.join(sessionsDir, f)).mtimeMs,
+          })).sort((a, b) => b.mtime - a.mtime);
+          try {
+            const sData = JSON.parse(fs.readFileSync(path.join(sessionsDir, sorted[0].file), 'utf8'));
+            currentActiveSessionId = sData.meta?.id || sorted[0].file.replace('.json', '');
+            currentActiveSessionMeta = sData.meta;
+            currentActiveSessionContent = sData.content;
+          } catch (e) {}
+        }
+      }
+      if (currentActiveSessionContent && currentActiveSessionContent.scene) {
+        lastCanvasScene = currentActiveSessionContent.scene;
+        if (currentActiveSessionContent.camera) {
+          lastCanvasCamera = currentActiveSessionContent.camera;
+        }
+      }
+      console.log(`[SyncServer] 💾 Restored persistent state: Cast board = ${currentCastBoardNode?.name || currentCastBoardId || 'none'}, Active Session = ${currentActiveSessionMeta?.name || currentActiveSessionId || 'none'}, Canvas Mirror = ${lastCanvasScene ? 'Ready' : 'None'}`);
     } catch (e) {
       console.warn('[SyncServer] Error loading state file:', e.message);
     }
@@ -121,7 +180,41 @@ export function startSyncServer(port = 8765) {
         server: 'NestedCanvas Sync Server',
         ip: localIp,
         port: port,
+        activeSessionId: currentActiveSessionId,
         sharedBoardsCount: sharedBoards.size,
+      }));
+      return;
+    }
+
+    if (req.url === '/api/sessions') {
+      const sessionsDir = path.join(__dirname, 'data', 'sessions');
+      const sessions = [];
+      if (fs.existsSync(sessionsDir)) {
+        const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
+        for (const file of files) {
+          try {
+            const raw = fs.readFileSync(path.join(sessionsDir, file), 'utf8');
+            const parsed = JSON.parse(raw);
+            if (parsed.meta) sessions.push(parsed.meta);
+          } catch (e) {}
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        activeSessionId: currentActiveSessionId,
+        sessions: sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)),
+      }));
+      return;
+    }
+
+    if (req.url === '/api/sessions/active') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        activeSessionId: currentActiveSessionId,
+        meta: currentActiveSessionMeta,
+        content: currentActiveSessionContent,
+        lastCanvasScene,
+        lastCanvasCamera,
       }));
       return;
     }
@@ -137,15 +230,20 @@ export function startSyncServer(port = 8765) {
         udpSocket.setBroadcast(true);
         setInterval(() => {
           try {
+            const currentIp = getLocalIp();
             const beacon = Buffer.from(JSON.stringify({
               app: 'nestedcanvas',
-              ip: getLocalIp(),
+              ip: currentIp,
               port: port,
+              name: 'Màn hình tương tác NestedCanvas',
               time: Date.now(),
             }));
-            udpSocket.send(beacon, 0, beacon.length, 8766, '255.255.255.255');
+            const targets = getBroadcastAddresses();
+            for (const bcast of targets) {
+              udpSocket.send(beacon, 0, beacon.length, 8766, bcast);
+            }
           } catch (err) {}
-        }, 3000);
+        }, 1500);
       } catch (err) {}
     });
     udpSocket.on('error', () => {});
@@ -190,7 +288,8 @@ export function startSyncServer(port = 8765) {
   }
 
   function findNodeInTree(rootNode, id) {
-    if (!rootNode || !id) return null;
+    if (!rootNode) return null;
+    if (!id || id === 'root' || id === rootNode.id) return rootNode;
     if (rootNode.id === id) return rootNode;
     if (Array.isArray(rootNode.children)) {
       for (const child of rootNode.children) {
@@ -247,11 +346,14 @@ export function startSyncServer(port = 8765) {
 
     console.log(`[SyncServer] 🟢 Client connected from ${clientIp}. Total online: ${allClients.size}`);
 
-    // Send WELCOME packet (strictly lists active shared child boards, current cast board and canvas mirror)
+    // Send WELCOME packet with active session info so all devices unify immediately
     sendToWs(ws, {
       type: 'WELCOME',
       count: allClients.size,
       local_ip: localIp,
+      active_session_id: currentActiveSessionId,
+      active_session_meta: currentActiveSessionMeta,
+      active_session_content: currentActiveSessionContent,
       shared_boards: Array.from(sharedBoards.values()),
       current_cast_board_id: currentCastBoardId,
       current_cast_board_node: currentCastBoardNode,
@@ -275,35 +377,95 @@ export function startSyncServer(port = 8765) {
 
       // 0. Smart Session Backup & Switch Protocol
       if (type === 'SESSION_BACKUP') {
-        const { sessionId, meta, content } = data;
+        const { sessionId, meta, content, clientId } = data;
         if (sessionId) {
+          currentActiveSessionId = sessionId;
+          currentActiveSessionMeta = meta;
+          currentActiveSessionContent = content;
+          if (content && content.scene) {
+            lastCanvasScene = content.scene;
+          }
           try {
             const sessionsDir = path.join(__dirname, 'data', 'sessions');
             fs.mkdirSync(sessionsDir, { recursive: true });
             const filePath = path.join(sessionsDir, `${sessionId}.json`);
             fs.writeFileSync(filePath, JSON.stringify({ meta, content, savedAt: Date.now() }, null, 2), 'utf8');
+            scheduleSaveState();
           } catch (e) {
             console.warn('[SyncServer] Error writing session backup:', e.message);
           }
+          // Broadcast to all other devices so all screens stay 100% unified
+          broadcastToAll(JSON.stringify({
+            type: 'SESSION_UPDATE',
+            sessionId,
+            meta,
+            content,
+            clientId: clientId || null,
+          }), ws);
         }
         return;
       }
 
       if (type === 'SESSION_SWITCH') {
+        const { sessionId } = data;
+        if (sessionId) {
+          currentActiveSessionId = sessionId;
+          const sessionFile = path.join(__dirname, 'data', 'sessions', `${sessionId}.json`);
+          if (fs.existsSync(sessionFile)) {
+            try {
+              const sData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+              currentActiveSessionMeta = sData.meta;
+              currentActiveSessionContent = sData.content;
+              if (sData.content && sData.content.scene) {
+                lastCanvasScene = sData.content.scene;
+              }
+            } catch (e) {}
+          }
+          scheduleSaveState();
+        }
         broadcastToAll(JSON.stringify(data), ws);
         return;
       }
 
       // 0. Full Canvas Mirror Protocol for PC Display
       if (type === 'CANVAS_MIRROR') {
+        const nodeCount = data.scene?.root?.children?.length || 0;
+        const elemCount = data.scene?.root?.elements?.length || 0;
+        console.log(`[SyncServer] 📥 Received CANVAS_MIRROR from ${clientIp} (${nodeCount} sub-boards, ${elemCount} root strokes)`);
         if (data.scene) {
           lastCanvasScene = data.scene;
+          const rootNode = data.scene.root || data.scene;
+          if (data.theme) rootNode.style = data.theme;
+          if (data.gridType) rootNode.gridType = data.gridType;
+          if (Array.isArray(rootNode.children)) {
+            for (const child of rootNode.children) {
+              if (child && child.id) {
+                boardStates.set(child.id, child);
+              }
+            }
+          }
         }
         if (data.camera) {
           lastCanvasCamera = data.camera;
         }
+        if (!data.isSingleBoardCast) {
+          currentCastBoardId = null;
+          currentCastBoardNode = null;
+          lastCastCameraSync = null;
+        }
         scheduleSaveState();
         broadcastToAll(JSON.stringify(data), ws);
+        return;
+      }
+
+      if (type === 'CANVAS_CLEAR' || type === 'DISPLAY_RESET') {
+        console.log(`[SyncServer] 🧹 Canvas cleared by ${clientIp}`);
+        lastCanvasScene = null;
+        lastCanvasCamera = null;
+        currentCastBoardId = null;
+        currentCastBoardNode = null;
+        scheduleSaveState();
+        broadcastToAll(JSON.stringify({ type: 'CANVAS_CLEAR' }), ws);
         return;
       }
 
@@ -314,13 +476,19 @@ export function startSyncServer(port = 8765) {
       }
 
       if (type === 'GET_CANVAS_MIRROR') {
-        if (lastCanvasScene) {
+        const sceneToSend = (currentActiveSessionContent && currentActiveSessionContent.scene) || lastCanvasScene;
+        const cameraToSend = (currentActiveSessionContent && currentActiveSessionContent.camera) || lastCanvasCamera;
+        if (sceneToSend) {
+          const rootNode = sceneToSend.root || sceneToSend;
           sendToWs(ws, {
             type: 'CANVAS_MIRROR',
-            scene: lastCanvasScene,
-            camera: lastCanvasCamera,
+            scene: sceneToSend,
+            camera: cameraToSend,
+            theme: rootNode.style || 'chalkboard',
+            gridType: rootNode.gridType || 'grid',
           });
         } else {
+          // If no canvas mirror cached yet, request once from presenter
           broadcastToAll(JSON.stringify({ type: 'PLEASE_UPLOAD_CANVAS_MIRROR' }), ws);
         }
         return;
@@ -332,17 +500,44 @@ export function startSyncServer(port = 8765) {
       }
 
       if (type === 'CANVAS_STROKE_ADD') {
-        const { nodeId, stroke } = data;
-        if (lastCanvasScene && nodeId && stroke) {
+        const { nodeId, stroke, sendTime } = data;
+        const pts = stroke?.points?.length || 0;
+        const latency = sendTime ? `${Date.now() - sendTime}ms` : 'n/a';
+        console.log(`[SyncServer] ✏️ Stroke added by ${clientIp}: node="${nodeId || 'root'}", ${pts} pts (Độ trễ LAN: ${latency})`);
+        if (!lastCanvasScene) {
+          lastCanvasScene = {
+            root: {
+              id: 'root',
+              name: 'World Canvas',
+              width: 1000000,
+              height: 1000000,
+              style: 'chalkboard',
+              gridType: 'grid',
+              elements: [],
+              children: [],
+            },
+          };
+        }
+        if (stroke) {
           const root = lastCanvasScene.root || lastCanvasScene;
-          const target = findNodeInTree(root, nodeId);
+          const target = (nodeId && nodeId !== 'root') ? (findNodeInTree(root, nodeId) || root) : root;
           if (target) {
             if (!Array.isArray(target.elements)) target.elements = [];
             if (!target.elements.some(s => s.id === stroke.id)) {
               target.elements.push(stroke);
             }
-            scheduleSaveState();
           }
+          if (currentActiveSessionContent && currentActiveSessionContent.scene) {
+            const sRoot = currentActiveSessionContent.scene.root || currentActiveSessionContent.scene;
+            const sTarget = (nodeId && nodeId !== 'root') ? (findNodeInTree(sRoot, nodeId) || sRoot) : sRoot;
+            if (sTarget) {
+              if (!Array.isArray(sTarget.elements)) sTarget.elements = [];
+              if (!sTarget.elements.some(s => s.id === stroke.id)) {
+                sTarget.elements.push(stroke);
+              }
+            }
+          }
+          scheduleSaveState();
         }
         broadcastToAll(JSON.stringify(data), ws);
         return;
@@ -350,24 +545,32 @@ export function startSyncServer(port = 8765) {
 
       if (type === 'CANVAS_STROKE_ERASE') {
         const { nodeId, removedStrokeIds } = data;
-        if (lastCanvasScene && nodeId && Array.isArray(removedStrokeIds)) {
+        if (lastCanvasScene && Array.isArray(removedStrokeIds)) {
           const root = lastCanvasScene.root || lastCanvasScene;
-          const target = findNodeInTree(root, nodeId);
+          const target = findNodeInTree(root, nodeId) || root;
           if (target && Array.isArray(target.elements)) {
             const idSet = new Set(removedStrokeIds);
             target.elements = target.elements.filter(s => !idSet.has(s.id));
-            scheduleSaveState();
           }
         }
+        if (currentActiveSessionContent && currentActiveSessionContent.scene && Array.isArray(removedStrokeIds)) {
+          const sRoot = currentActiveSessionContent.scene.root || currentActiveSessionContent.scene;
+          const sTarget = findNodeInTree(sRoot, nodeId) || sRoot;
+          if (sTarget && Array.isArray(sTarget.elements)) {
+            const idSet = new Set(removedStrokeIds);
+            sTarget.elements = sTarget.elements.filter(s => !idSet.has(s.id));
+          }
+        }
+        scheduleSaveState();
         broadcastToAll(JSON.stringify(data), ws);
         return;
       }
 
       if (type === 'CANVAS_STYLE') {
         const { nodeId, style, gridType, isGlobal } = data;
-        if (lastCanvasScene) {
-          const root = lastCanvasScene.root || lastCanvasScene;
-          if (isGlobal) {
+        const updateStyleOnRoot = (root) => {
+          if (!root) return;
+          if (isGlobal || !nodeId || nodeId === 'root' || nodeId === root.id) {
             if (style) root.style = style;
             if (gridType) root.gridType = gridType;
             const updateRecursive = (n) => {
@@ -387,8 +590,15 @@ export function startSyncServer(port = 8765) {
               if (gridType) target.gridType = gridType;
             }
           }
-          scheduleSaveState();
+        };
+
+        if (lastCanvasScene) {
+          updateStyleOnRoot(lastCanvasScene.root || lastCanvasScene);
         }
+        if (currentActiveSessionContent && currentActiveSessionContent.scene) {
+          updateStyleOnRoot(currentActiveSessionContent.scene.root || currentActiveSessionContent.scene);
+        }
+        scheduleSaveState();
         broadcastToAll(JSON.stringify(data), ws);
         return;
       }
@@ -617,13 +827,24 @@ export function startSyncServer(port = 8765) {
         return;
       }
 
-      // 9. Nested child board created inside a shared board
+      // 9. Nested child board created
       if (type === 'NODE_CREATE') {
         const { boardId, parentId, node } = data;
         const targetRoomId = boardId;
-        if (!targetRoomId || !sharedBoards.has(targetRoomId)) return;
 
-        if (node && boardStates.has(targetRoomId)) {
+        if (node && lastCanvasScene) {
+          const root = lastCanvasScene.root || lastCanvasScene;
+          const parentNode = findNodeInTree(root, parentId || (targetRoomId && targetRoomId !== root.id ? targetRoomId : root.id)) || root;
+          if (parentNode) {
+            if (!Array.isArray(parentNode.children)) parentNode.children = [];
+            if (!parentNode.children.some(c => c.id === node.id)) {
+              parentNode.children.push(node);
+            }
+            scheduleSaveState();
+          }
+        }
+
+        if (targetRoomId && sharedBoards.has(targetRoomId) && boardStates.has(targetRoomId)) {
           const rootNode = boardStates.get(targetRoomId);
           const parentNode = findNodeInTree(rootNode, parentId || targetRoomId);
           if (parentNode) {
@@ -634,21 +855,35 @@ export function startSyncServer(port = 8765) {
           }
         }
 
-        if (boardRooms.has(targetRoomId)) {
+        if (targetRoomId && boardRooms.has(targetRoomId)) {
           broadcastToRoom(targetRoomId, JSON.stringify(data), ws);
+        } else {
+          broadcastToAll(JSON.stringify(data), ws);
         }
         return;
       }
 
-      // 10. Node transform on shared board or any of its nested child boards
+      // 10. Node transform on canvas or shared board
       if (type === 'NODE_TRANSFORM') {
         const { boardId, nodeId } = data;
-        const targetRoomId = boardId || nodeId;
-        if (!targetRoomId || !sharedBoards.has(targetRoomId)) return;
+        const targetId = nodeId || boardId;
 
-        if (boardStates.has(targetRoomId)) {
-          const rootNode = boardStates.get(targetRoomId);
-          const targetNode = findNodeInTree(rootNode, nodeId || targetRoomId);
+        if (lastCanvasScene && targetId) {
+          const root = lastCanvasScene.root || lastCanvasScene;
+          const targetNode = findNodeInTree(root, targetId);
+          if (targetNode) {
+            if (typeof data.w === 'number') targetNode.width = data.w;
+            if (typeof data.h === 'number') targetNode.height = data.h;
+            if (!targetNode.transform) targetNode.transform = {};
+            if (typeof data.x === 'number') targetNode.transform.tx = data.x;
+            if (typeof data.y === 'number') targetNode.transform.ty = data.y;
+            scheduleSaveState();
+          }
+        }
+
+        if (targetId && sharedBoards.has(targetId) && boardStates.has(targetId)) {
+          const rootNode = boardStates.get(targetId);
+          const targetNode = findNodeInTree(rootNode, targetId);
           if (targetNode) {
             targetNode.width = data.w;
             targetNode.height = data.h;
@@ -657,44 +892,90 @@ export function startSyncServer(port = 8765) {
             targetNode.transform.ty = data.y;
           }
         }
-        if (boardRooms.has(targetRoomId)) {
-          broadcastToRoom(targetRoomId, JSON.stringify(data), ws);
+
+        if (boardId && boardRooms.has(boardId)) {
+          broadcastToRoom(boardId, JSON.stringify(data), ws);
+        } else {
+          broadcastToAll(JSON.stringify(data), ws);
         }
         return;
       }
 
-      // 11. Nested child board deleted inside a shared board
+      // 11. Nested child board deleted
       if (type === 'NODE_DELETE') {
         const { boardId, nodeId } = data;
-        const targetRoomId = boardId;
-        if (!targetRoomId || !sharedBoards.has(targetRoomId)) return;
+        const targetId = nodeId || boardId;
 
-        if (nodeId && boardStates.has(targetRoomId)) {
-          const rootNode = boardStates.get(targetRoomId);
-          removeNodeFromTree(rootNode, nodeId);
+        if (lastCanvasScene && targetId) {
+          const root = lastCanvasScene.root || lastCanvasScene;
+          removeNodeFromTree(root, targetId);
+          scheduleSaveState();
         }
-        if (boardRooms.has(targetRoomId)) {
-          broadcastToRoom(targetRoomId, JSON.stringify(data), ws);
+
+        if (boardId && sharedBoards.has(boardId) && boardStates.has(boardId)) {
+          const rootNode = boardStates.get(boardId);
+          removeNodeFromTree(rootNode, targetId);
+        }
+
+        if (boardId && boardRooms.has(boardId)) {
+          broadcastToRoom(boardId, JSON.stringify(data), ws);
+        } else {
+          broadcastToAll(JSON.stringify(data), ws);
         }
         return;
       }
 
-      // 12. Node style on shared board or any of its nested child boards
+      // 12. Node style
       if (type === 'NODE_STYLE') {
         const { boardId, nodeId, style, gridType } = data;
-        const targetRoomId = boardId || nodeId;
-        if (!targetRoomId || !sharedBoards.has(targetRoomId)) return;
+        const targetId = nodeId || boardId;
 
-        if (boardStates.has(targetRoomId)) {
-          const rootNode = boardStates.get(targetRoomId);
-          const targetNode = findNodeInTree(rootNode, nodeId || targetRoomId);
+        if (lastCanvasScene && targetId) {
+          const root = lastCanvasScene.root || lastCanvasScene;
+          const targetNode = findNodeInTree(root, targetId);
+          if (targetNode) {
+            if (style) targetNode.style = style;
+            if (gridType) targetNode.gridType = gridType;
+            scheduleSaveState();
+          }
+        }
+
+        if (boardId && sharedBoards.has(boardId) && boardStates.has(boardId)) {
+          const rootNode = boardStates.get(boardId);
+          const targetNode = findNodeInTree(rootNode, targetId);
           if (targetNode) {
             if (style) targetNode.style = style;
             if (gridType) targetNode.gridType = gridType;
           }
         }
-        if (boardRooms.has(targetRoomId)) {
-          broadcastToRoom(targetRoomId, JSON.stringify(data), ws);
+
+        if (boardId && boardRooms.has(boardId)) {
+          broadcastToRoom(boardId, JSON.stringify(data), ws);
+        } else {
+          broadcastToAll(JSON.stringify(data), ws);
+        }
+        return;
+      }
+
+      // 12.1 Node clear
+      if (type === 'NODE_CLEAR') {
+        const { boardId, nodeId } = data;
+        const targetId = nodeId || boardId;
+
+        if (lastCanvasScene && targetId) {
+          const root = lastCanvasScene.root || lastCanvasScene;
+          const targetNode = findNodeInTree(root, targetId) || (targetId === root.id ? root : null);
+          if (targetNode) {
+            targetNode.elements = [];
+            targetNode.images = [];
+            scheduleSaveState();
+          }
+        }
+
+        if (boardId && boardRooms.has(boardId)) {
+          broadcastToRoom(boardId, JSON.stringify(data), ws);
+        } else {
+          broadcastToAll(JSON.stringify(data), ws);
         }
         return;
       }
@@ -702,18 +983,21 @@ export function startSyncServer(port = 8765) {
       // 13. Graph expressions on shared board or any of its nested child boards
       if (type === 'GRAPH_EXPR') {
         const { boardId, nodeId, expressions } = data;
-        const targetRoomId = boardId || nodeId;
-        if (!targetRoomId || !sharedBoards.has(targetRoomId)) return;
+        const targetId = nodeId || boardId;
 
-        if (expressions && boardStates.has(targetRoomId)) {
-          const rootNode = boardStates.get(targetRoomId);
-          const targetNode = findNodeInTree(rootNode, nodeId || targetRoomId);
+        if (expressions && lastCanvasScene && targetId) {
+          const root = lastCanvasScene.root || lastCanvasScene;
+          const targetNode = findNodeInTree(root, targetId);
           if (targetNode && targetNode.graphData) {
             targetNode.graphData.expressions = expressions;
+            scheduleSaveState();
           }
         }
-        if (boardRooms.has(targetRoomId)) {
-          broadcastToRoom(targetRoomId, JSON.stringify(data), ws);
+
+        if (boardId && boardRooms.has(boardId)) {
+          broadcastToRoom(boardId, JSON.stringify(data), ws);
+        } else {
+          broadcastToAll(JSON.stringify(data), ws);
         }
         return;
       }

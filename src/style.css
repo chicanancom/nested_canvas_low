@@ -1054,8 +1054,9 @@ body.mode-single-board #mobile-single-board-ui {
 }
 
 /* Tối ưu cảm ứng điện thoại */
-canvas {
+html, body, #app, .canvas-container, canvas {
   touch-action: none !important;
+  -webkit-touch-callout: none;
 }
 
 @media (max-width: 768px) {
@@ -1577,6 +1578,14 @@ canvas {
     max-width: 75px !important;
     font-size: 11px !important;
   }
+  #btn-save-workspace {
+    padding: 4px 8px !important;
+    height: 30px !important;
+    gap: 4px !important;
+    margin-left: 2px !important;
+    flex-shrink: 0;
+    font-size: 11.5px !important;
+  }
 
   .divider {
     height: 16px;
@@ -1615,11 +1624,19 @@ canvas {
   }
 
   #btn-lan-sync {
-    padding: 0 6px !important;
+    padding: 0 8px !important;
     height: 30px !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 5px !important;
+    border-radius: 8px !important;
+    transition: all 0.2s ease !important;
   }
   #label-lan-presence {
-    display: none !important;
+    display: inline-block !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    white-space: nowrap !important;
   }
 
   #btn-cast-pc {

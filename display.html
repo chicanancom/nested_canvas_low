@@ -93,12 +93,38 @@
         <canvas id="display-canvas"></canvas>
       </div>
 
-      <!-- Màn hình chờ đơn giản khi bắt đầu (tự ẩn ngay khi có dữ liệu) -->
-      <div id="idle-overlay" class="hidden">
-        <div style="display: flex; align-items: center; gap: 14px; color: #8b949e; font-size: 16px; font-weight: 500;">
-          <div class="idle-pulse"></div>
-          <span>Đang kết nối màn chiếu...</span>
+      <!-- Màn hình chờ chuyên nghiệp (tự động ẩn khi có nét vẽ hoặc bảng được chiếu) -->
+      <div id="idle-overlay">
+        <div class="glass-panel" style="background: rgba(13, 17, 23, 0.92); border: 1px solid rgba(88, 166, 255, 0.3); border-radius: 20px; padding: 36px 44px; text-align: center; max-width: 520px; box-shadow: 0 24px 60px rgba(0,0,0,0.8); backdrop-filter: blur(20px); display: flex; flex-direction: column; align-items: center; gap: 16px;">
+          <div style="width: 64px; height: 64px; border-radius: 18px; background: rgba(88, 166, 255, 0.12); border: 1px solid rgba(88, 166, 255, 0.35); display: flex; align-items: center; justify-content: center; font-size: 32px; box-shadow: 0 0 24px rgba(88,166,255,0.2);">
+            🖥️
+          </div>
+          
+          <div>
+            <h1 style="font-size: 22px; font-weight: 700; color: #f0f6fc; margin: 0 0 6px 0; letter-spacing: -0.3px;">Màn Chiếu NestedCanvas</h1>
+            <p style="font-size: 13.5px; color: #8b949e; margin: 0; line-height: 1.5;">
+              Màn hình phụ thời gian thực không tương tác. Tự động đồng bộ nét vẽ và bảng con từ điện thoại hoặc máy tính bảng.
+            </p>
+          </div>
+
+          <div id="idle-status-box" style="display: flex; align-items: center; gap: 10px; padding: 10px 18px; background: rgba(56, 139, 253, 0.1); border: 1px solid rgba(56, 139, 253, 0.25); border-radius: 30px; font-size: 13px; color: #58a6ff; font-weight: 500;">
+            <div class="idle-pulse" id="idle-status-dot"></div>
+            <span id="idle-status-text">Đang kết nối máy chủ đồng bộ LAN...</span>
+          </div>
+
+          <div style="border-top: 1px solid rgba(255,255,255,0.08); width: 100%; padding-top: 14px; margin-top: 4px; display: flex; justify-content: space-around; font-size: 11.5px; color: #6e7681;">
+            <span>⌨️ <b>F11</b> Toàn màn hình</span>
+            <span>⌨️ <b>Esc</b> Thu nhỏ</span>
+            <span>🔄 <b>Ctrl+R</b> Tải lại</span>
+            <span>🧹 <b>Ctrl+Del</b> Xóa bảng</span>
+          </div>
         </div>
+      </div>
+
+      <!-- Góc thông báo trạng thái nhẹ nhàng (Floating status pill) -->
+      <div id="display-status-pill" style="position: absolute; bottom: 16px; right: 16px; z-index: 40; padding: 6px 14px; background: rgba(13, 17, 23, 0.75); border: 1px solid rgba(88, 166, 255, 0.2); border-radius: 20px; font-size: 11.5px; color: #8b949e; display: flex; align-items: center; gap: 8px; backdrop-filter: blur(10px); pointer-events: none; transition: opacity 0.4s ease; opacity: 0.85;">
+        <span id="display-pill-dot" style="width: 7px; height: 7px; border-radius: 50%; background: #3fb950; box-shadow: 0 0 6px #3fb950;"></span>
+        <span id="display-pill-text">Màn chiếu sẵn sàng</span>
       </div>
     </div>
 

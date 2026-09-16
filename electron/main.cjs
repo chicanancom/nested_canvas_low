@@ -2,9 +2,26 @@ const { app, BrowserWindow, globalShortcut } = require('electron');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
+const { fork } = require('child_process');
 
 let mainWindow = null;
 let staticServer = null;
+let syncProcess = null;
+
+async function ensureSyncServerRunning() {
+  const isSyncUp = await checkUrlActive('http://127.0.0.1:8765/health');
+  if (!isSyncUp) {
+    try {
+      const syncServerScript = path.join(__dirname, '../server/sync_server.js');
+      if (fs.existsSync(syncServerScript)) {
+        console.log('[Electron PC Display] Launching background Sync Server on port 8765...');
+        syncProcess = fork(syncServerScript, [], { stdio: 'inherit' });
+      }
+    } catch (e) {
+      console.warn('[Electron PC Display] Could not auto-launch sync server:', e.message);
+    }
+  }
+}
 
 // Khởi tạo Static Server cục bộ siêu nhẹ nếu Vite dev server chưa bật
 function startLocalStaticServer(distDir, port = 3100) {
@@ -97,6 +114,15 @@ async function createWindow() {
     },
   });
 
+  // Chuyển tiếp log từ màn chiếu ra terminal để dễ theo dõi
+  mainWindow.webContents.on('console-message', (event, level, message) => {
+    console.log(`[Display Window] ${message}`);
+  });
+
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    console.warn(`[Display Window] ⚠️ Load failed: ${errorCode} - ${errorDescription}`);
+  });
+
   const isViteUp = await checkUrlActive('http://localhost:3000/display.html');
 
   if (isViteUp) {
@@ -117,7 +143,8 @@ async function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await ensureSyncServerRunning();
   createWindow();
 
   // Đăng ký phím tắt toàn cục
@@ -139,6 +166,41 @@ app.whenReady().then(() => {
     }
   });
 
+  const clearDisplayCache = async () => {
+    if (mainWindow) {
+      try {
+        await mainWindow.webContents.executeJavaScript(`
+          localStorage.removeItem('nestedcanvas_display_mirror_state');
+          const app = window.pcDisplayApp || window.displayApp;
+          if (app) {
+            if (typeof app.clearDisplayState === 'function') app.clearDisplayState();
+            if (app.syncClient && app.syncClient.isConnected) {
+              app.syncClient.send('CANVAS_CLEAR', {});
+            }
+          }
+          location.reload();
+        `);
+      } catch (e) {
+        mainWindow.reload();
+      }
+    }
+  };
+
+  globalShortcut.register('CommandOrControl+Shift+Delete', clearDisplayCache);
+  globalShortcut.register('CommandOrControl+Shift+Backspace', clearDisplayCache);
+
+  globalShortcut.register('F12', () => {
+    if (mainWindow) {
+      mainWindow.webContents.toggleDevTools();
+    }
+  });
+
+  globalShortcut.register('CommandOrControl+Alt+I', () => {
+    if (mainWindow) {
+      mainWindow.webContents.toggleDevTools();
+    }
+  });
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -149,6 +211,11 @@ app.on('will-quit', () => {
   if (staticServer) {
     try {
       staticServer.close();
+    } catch (e) {}
+  }
+  if (syncProcess) {
+    try {
+      syncProcess.kill();
     } catch (e) {}
   }
 });

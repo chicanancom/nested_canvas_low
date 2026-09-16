@@ -25,12 +25,17 @@ class NestedCanvasApp {
     this.remoteActiveSessions = new Map();
     this.syncClient = null;
     this.sessionManager = null;
+    this.hasUnsavedChanges = false;
 
     this.canvas = document.getElementById('canvas');
     this.renderer = new CanvasRenderer(this.canvas);
     this.scene = new SceneGraph();
     this.history = new HistoryManager(100);
     this.camera = new Camera(0, 0, 1.0, window.innerWidth, window.innerHeight);
+
+    CanvasNode.onImageLoaded = () => {
+      this.requestRender();
+    };
 
     // Handwriting Math OCR State
     this.ocrStrokes = [];
@@ -124,19 +129,51 @@ class NestedCanvasApp {
     }
   }
 
-  saveState() {
-    if (this._saveStateTimer) clearTimeout(this._saveStateTimer);
-    this._saveStateTimer = setTimeout(() => {
-      this._saveStateTimer = null;
-      this.saveStateImmediately();
-    }, 350);
+  markUnsavedChanges() {
+    if (this.isApplyingRemoteSync) return;
+    this.hasUnsavedChanges = true;
+    const dot = document.getElementById('dot-unsaved-changes');
+    if (dot) dot.style.visibility = 'visible';
+    const label = document.getElementById('label-save-status');
+    if (label) label.textContent = 'Lưu Bài*';
+    const btn = document.getElementById('btn-save-workspace');
+    if (btn) {
+      btn.style.borderColor = 'rgba(240,136,62,0.6)';
+      btn.style.color = '#f0883e';
+    }
   }
 
-  saveStateImmediately() {
-    if (this._saveStateTimer) {
-      clearTimeout(this._saveStateTimer);
-      this._saveStateTimer = null;
+  saveState() {
+    // Chỉ đánh dấu có thay đổi chưa lưu — KHÔNG tự động lưu hay broadcast ở đây.
+    // Autosave được kích hoạt rờ rạc từ các sự kiện quan trọng (stroke add, erase, node create...).
+    this.markUnsavedChanges();
+  }
+
+  /**
+   * Gọi sau khi có thay đổi thực sự về nội dung.
+   * Chỉ lưu vào IndexedDB (debounce 3s) — KHÔNG tự động broadcast CANVAS_MIRROR.
+   * Display chỉ được cập nhật khi user bấm lưu thủ công (Ctrl+S / nút Lưu)
+   * để tránh việc display reset camera liên tục.
+   */
+  scheduleContentSave() {
+    this.markUnsavedChanges();
+    if (this.sessionManager) {
+      this.sessionManager.scheduleAutoSave(
+        this.scene,
+        this.camera,
+        this.boardCounter || 0,
+        this.selectedNodeId,
+        this.syncClient?.currentCastBoardId || null
+      );
     }
+  }
+
+  scheduleCanvasMirrorBroadcast() {
+    // Đã vô hiệu hóa — không tự động broadcast CANVAS_MIRROR nữa.
+    // Gọi broadcastCanvasMirror() trực tiếp sau khi lưu thủ công.
+  }
+
+  async saveManualWorkspace(silent = false) {
     try {
       if (this.isSingleBoardMode) {
         const node = this.scene.getNode(this.singleBoardId);
@@ -150,14 +187,8 @@ class NestedCanvasApp {
             savedAt: Date.now(),
           }));
         }
-        return;
-      }
-
-      if (this.isApplyingRemoteSync) return;
-
-      // Lưu trữ thông minh vào IndexedDB không giới hạn dung lượng & không giật lag
-      if (this.sessionManager) {
-        this.sessionManager.scheduleAutoSave(
+      } else if (this.sessionManager) {
+        await this.sessionManager.saveCurrentSession(
           this.scene,
           this.camera,
           this.boardCounter || 0,
@@ -166,11 +197,92 @@ class NestedCanvasApp {
         );
       }
 
+      this.markSavedState();
+
+      // Broadcast CANVAS_MIRROR một lần duy nhất sau khi lưu thủ công
       if (this.syncClient && this.syncClient.isConnected) {
         this.broadcastCanvasMirror();
       }
+
+      if (!silent) {
+        this.showToast('💾 Đã lưu bài giảng thành công!');
+      }
+
+      return true;
     } catch (e) {
-      console.warn('[Storage] Error saving workspace state:', e);
+      console.warn('[Storage] Manual save error:', e);
+      if (!silent) this.showToast('❌ Lỗi khi lưu bài giảng');
+      return false;
+    }
+  }
+
+  markSavedState() {
+    this.hasUnsavedChanges = false;
+    const dot = document.getElementById('dot-unsaved-changes');
+    if (dot) dot.style.visibility = 'hidden';
+    const label = document.getElementById('label-save-status');
+    if (label) label.textContent = 'Đã Lưu ✅';
+    const btn = document.getElementById('btn-save-workspace');
+    if (btn) {
+      btn.style.borderColor = 'rgba(63,185,80,0.5)';
+      btn.style.color = '#3fb950';
+    }
+
+    setTimeout(() => {
+      if (!this.hasUnsavedChanges && label) {
+        label.textContent = 'Lưu Bài';
+        if (btn) {
+          btn.style.borderColor = '';
+          btn.style.color = '';
+        }
+      }
+    }, 2500);
+  }
+
+  saveStateImmediately() {
+    return this.saveManualWorkspace(true);
+  }
+
+  showUnsavedConfirmModal(onProceedToExit) {
+    const modal = document.getElementById('modal-unsaved-confirm');
+    if (!modal) {
+      if (onProceedToExit) onProceedToExit();
+      return;
+    }
+
+    modal.style.display = 'flex';
+
+    const btnSaveExit = document.getElementById('btn-unsaved-save-exit');
+    const btnDiscardExit = document.getElementById('btn-unsaved-discard-exit');
+    const btnCancelExit = document.getElementById('btn-unsaved-cancel') || document.getElementById('btn-unsaved-cancel-exit');
+
+    const cleanup = () => {
+      modal.style.display = 'none';
+      if (btnSaveExit) btnSaveExit.onclick = null;
+      if (btnDiscardExit) btnDiscardExit.onclick = null;
+      if (btnCancelExit) btnCancelExit.onclick = null;
+    };
+
+    if (btnSaveExit) {
+      btnSaveExit.onclick = async () => {
+        cleanup();
+        await this.saveManualWorkspace(true);
+        if (onProceedToExit) onProceedToExit();
+      };
+    }
+
+    if (btnDiscardExit) {
+      btnDiscardExit.onclick = () => {
+        cleanup();
+        this.hasUnsavedChanges = false;
+        if (onProceedToExit) onProceedToExit();
+      };
+    }
+
+    if (btnCancelExit) {
+      btnCancelExit.onclick = () => {
+        cleanup();
+      };
     }
   }
 
@@ -182,7 +294,31 @@ class NestedCanvasApp {
         onSessionChange: (meta) => {
           this.updateActiveSessionUI(meta);
         },
+        onAutoSave: (meta) => {
+          this.markSavedState();
+        },
       });
+
+      // 1. Thử kéo phiên làm việc đang hoạt động (Active Session) từ Sync Server để đồng nhất 100%
+      try {
+        const host = this.syncClient?.getHost() || window.location.hostname || 'localhost';
+        const port = this.syncClient?.port || 8765;
+        const res = await fetch(`http://${host}:${port}/api/sessions/active`, { signal: AbortSignal.timeout(600) });
+        if (res.ok) {
+          const serverActive = await res.json();
+          if (serverActive && serverActive.meta && serverActive.content) {
+            await this.sessionManager.saveSessionSilently(serverActive.meta, serverActive.content);
+            this.sessionManager.currentSessionId = serverActive.meta.id;
+            this.sessionManager.currentSessionMeta = serverActive.meta;
+            this.applySessionContent(serverActive.content);
+            this.updateActiveSessionUI(serverActive.meta);
+            console.log(`[SessionManager] 🎯 Unified with server active session: ${serverActive.meta.name}`);
+            return;
+          }
+        }
+      } catch (e) {
+        // Tiếp tục dùng local session nếu chưa nối được server
+      }
 
       const session = await this.sessionManager.init({
         scene: this.scene.toJSON(),
@@ -193,6 +329,17 @@ class NestedCanvasApp {
         this.applySessionContent(session.content);
       }
       this.updateActiveSessionUI(this.sessionManager.getCurrentSessionMeta());
+      this._sessionLoaded = true;
+
+      // Tự động đồng bộ toàn cảnh nét vẽ cũ lên Display và Server ngay khi nạp xong
+      if (this.syncClient && this.syncClient.isConnected) {
+        this.broadcastCanvasMirror();
+        this.broadcastCurrentCameraSync();
+        if (this._savedCastBoardId) {
+          const castNode = this.scene.getNode(this._savedCastBoardId);
+          if (castNode) this.castBoardToPC(castNode);
+        }
+      }
     } catch (err) {
       console.warn('[SessionManager] Init error:', err);
     }
@@ -203,6 +350,9 @@ class NestedCanvasApp {
     try {
       if (content.scene && content.scene.root) {
         this.scene.loadFromJSON(content.scene);
+        this.globalTheme = this.scene.root.style || 'chalkboard';
+        this.globalGrid = this.scene.root.gridType || 'grid';
+        if (this.renderThemeMenu) this.renderThemeMenu();
       }
       if (typeof content.boardCounter === 'number') {
         this.boardCounter = content.boardCounter;
@@ -223,11 +373,13 @@ class NestedCanvasApp {
         this.selectedNodeId = null;
       }
 
-      this.history.clear();
-
-      if (this.syncClient && this.syncClient.isConnected) {
-        this.broadcastCanvasMirror();
+      if (content.currentCastBoardId) {
+        this._savedCastBoardId = content.currentCastBoardId;
       }
+
+      this.history.clear();
+      this.updateHierarchyTree();
+      this.updateUI();
     } catch (e) {
       console.warn('[SessionManager] Error applying session content:', e);
     }
@@ -391,6 +543,8 @@ class NestedCanvasApp {
         this.applySessionContent(session.content);
       }
       this.updateActiveSessionUI(session.meta);
+      this.broadcastCanvasMirror();
+      this.broadcastCurrentCameraSync();
       this.showToast(`✨ Đã mở phiên mới: "${session.meta.name}"`, 3000);
 
       const modalSessions = document.getElementById('modal-sessions');
@@ -414,6 +568,8 @@ class NestedCanvasApp {
       if (session && session.content) {
         this.applySessionContent(session.content);
         this.updateActiveSessionUI(session.meta);
+        this.broadcastCanvasMirror();
+        this.broadcastCurrentCameraSync();
         this.showToast(`📖 Đã mở: "${session.meta.name}"`, 3000);
       }
       const modalSessions = document.getElementById('modal-sessions');
@@ -830,10 +986,26 @@ class NestedCanvasApp {
 
   bindEvents() {
     window.addEventListener('resize', () => this.renderer.resize());
-    window.addEventListener('beforeunload', () => this.saveStateImmediately());
-    window.addEventListener('pagehide', () => this.saveStateImmediately());
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') this.saveStateImmediately();
+    window.addEventListener('beforeunload', (e) => {
+      if (this.hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = 'Bạn có thay đổi chưa lưu. Bạn có muốn lưu bài giảng trước khi thoát không?';
+        return e.returnValue;
+      }
+    });
+
+    // Bắt sự kiện nút quay lại / thoát app trên Android (Capacitor)
+    document.addEventListener('backbutton', (e) => {
+      if (this.hasUnsavedChanges) {
+        e.preventDefault();
+        this.showUnsavedConfirmModal(() => {
+          if (window.Capacitor?.isNativePlatform() && window.Capacitor.Plugins?.App?.exitApp) {
+            window.Capacitor.Plugins.App.exitApp();
+          } else {
+            window.history.back();
+          }
+        });
+      }
     });
 
     // Prevent browser autoscroll on middle click
@@ -850,6 +1022,13 @@ class NestedCanvasApp {
     window.addEventListener('pointermove', (e) => this.onPointerMove(e));
     window.addEventListener('pointerup', (e) => this.onPointerUp(e));
     window.addEventListener('pointercancel', (e) => this.onPointerUp(e));
+
+    // Native Touch Events (100% Reliable 2-Finger Pinch-Zoom & Two-Finger Pan on Mobile)
+    this.canvas.addEventListener('touchstart', (e) => this.onTouchStart(e), { passive: false });
+    window.addEventListener('touchmove', (e) => this.onTouchMove(e), { passive: false });
+    window.addEventListener('touchend', (e) => this.onTouchEnd(e), { passive: false });
+    window.addEventListener('touchcancel', (e) => this.onTouchEnd(e), { passive: false });
+
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
 
     // Keyboard Shortcuts & Spacebar Panning
@@ -952,6 +1131,14 @@ class NestedCanvasApp {
       this.fitAllContent();
       this.broadcastCurrentCameraSync();
     });
+
+    // Nút Lưu Bài Giảng Thủ Công
+    const btnSaveWorkspace = document.getElementById('btn-save-workspace');
+    if (btnSaveWorkspace) {
+      btnSaveWorkspace.addEventListener('click', () => {
+        this.saveManualWorkspace();
+      });
+    }
 
     // Undo / Redo
     document.getElementById('btn-undo').addEventListener('click', () => this.undo());
@@ -1181,7 +1368,7 @@ class NestedCanvasApp {
     if (this.history.undoStack.length > this.history.maxCapacity) {
       this.history.undoStack.shift();
     }
-    this.saveState();
+    this.scheduleContentSave();
   }
 
   promptInsertImage(targetNode) {
@@ -1226,17 +1413,43 @@ class NestedCanvasApp {
           localY = center.y - (h + headerH) * 0.5;
         }
 
+        let targetImg = img;
+        const maxResolution = 2048;
+        if (img.width > maxResolution || img.height > maxResolution || (e.target.result && e.target.result.length > 2 * 1024 * 1024)) {
+          try {
+            const scale = Math.min(1, maxResolution / Math.max(img.width, img.height));
+            const cvs = document.createElement('canvas');
+            cvs.width = Math.round(img.width * scale);
+            cvs.height = Math.round(img.height * scale);
+            const ctx = cvs.getContext('2d');
+            ctx.drawImage(img, 0, 0, cvs.width, cvs.height);
+            const mime = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+            const optDataUrl = cvs.toDataURL(mime, 0.88);
+            const optImg = new Image();
+            optImg.src = optDataUrl;
+            targetImg = optImg;
+          } catch (err) {}
+        }
+
         const fileName = file.name ? file.name.replace(/\.[^/.]+$/, '') : 'Ảnh Mới';
         const imageCanvasNode = new CanvasNode(
           `🖼️ ${fileName}`,
           w,
           h + headerH,
           Transform2D.fromTranslation(localX, localY),
-          img
+          targetImg
         );
 
         const cmd = new CreateNodeCommand(parentNode.id, imageCanvasNode);
         this.executeCommand(cmd, parentNode.id);
+        if (this.syncClient && this.syncClient.isConnected && !this.isApplyingRemoteSync) {
+          this.syncClient.send('NODE_CREATE', {
+            clientId: this.clientId,
+            parentId: parentNode.id,
+            node: imageCanvasNode.toJSON(),
+          });
+          setTimeout(() => this.broadcastCanvasMirror(), 60);
+        }
         this.selectedNodeId = imageCanvasNode.id;
         this.updateHierarchyTree();
         this.updateNodeProperties();
@@ -1246,7 +1459,89 @@ class NestedCanvasApp {
     reader.readAsDataURL(file);
   }
 
+  // --- CỬ CHỈ CẢM ỨNG NATIVE 2 NGÓN TAY (NATIVE PINCH-TO-ZOOM & TWO-FINGER PAN) ---
+  onTouchStart(e) {
+    if (this.isMultiPointMode) return;
+    if (e.touches && e.touches.length >= 2) {
+      if (e.cancelable) e.preventDefault();
+      this.isPinching = true;
+
+      // Xóa và hủy bỏ các nét vẽ dở của 2 ngón tay vừa chạm
+      if (this.activeSessions.size > 0) {
+        for (const [pid] of this.activeSessions.entries()) {
+          if (this.syncClient && this.syncClient.isConnected) {
+            this.syncClient.send('CANVAS_STROKE_LIVE', {
+              clientId: `${this.clientId}_${pid}`,
+              session: null,
+            });
+          }
+        }
+        this.activeSessions.clear();
+      }
+      this.isDragging = false;
+      this.isPanning = false;
+      this.isPanningChild = false;
+
+      const t0 = e.touches[0];
+      const t1 = e.touches[1];
+      this.initialPinchDistance = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+      this.initialPinchZoom = this.camera.zoom;
+      const midScreen = new Vec2((t0.clientX + t1.clientX) * 0.5, (t0.clientY + t1.clientY) * 0.5);
+      this.initialPinchCenterWorld = this.camera.screenToWorld(midScreen);
+    }
+  }
+
+  onTouchMove(e) {
+    if (this.isMultiPointMode) return;
+    if (e.touches && e.touches.length >= 2) {
+      if (e.cancelable) e.preventDefault();
+      const t0 = e.touches[0];
+      const t1 = e.touches[1];
+      const curDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+      const curMidScreen = new Vec2((t0.clientX + t1.clientX) * 0.5, (t0.clientY + t1.clientY) * 0.5);
+
+      if (!this.isPinching || !this.initialPinchDistance || !this.initialPinchCenterWorld || this.initialPinchDistance < 5) {
+        this.isPinching = true;
+        this.initialPinchDistance = Math.max(5, curDist);
+        this.initialPinchZoom = this.camera.zoom;
+        this.initialPinchCenterWorld = this.camera.screenToWorld(curMidScreen);
+        return;
+      }
+
+      const factor = curDist / this.initialPinchDistance;
+      const newZoom = Math.max(0.05, Math.min(32.0, this.initialPinchZoom * factor));
+      this.camera.zoom = newZoom;
+      const screenCenter = new Vec2(this.camera.viewportWidth * 0.5, this.camera.viewportHeight * 0.5);
+      this.camera.pan = this.initialPinchCenterWorld.sub(curMidScreen.sub(screenCenter).scale(1.0 / newZoom));
+      this.updateZoomHUD();
+      this.broadcastCurrentCameraSync();
+    }
+  }
+
+  onTouchEnd(e) {
+    if (!e.touches || e.touches.length < 2) {
+      if (this.isPinching) {
+        this.justFinishedPinching = Date.now();
+        // Lưu trạng thái sau khi kết thúc pinch (không phải mỗi frame)
+        this.scheduleContentSave();
+      }
+      this.isPinching = false;
+      this.initialPinchDistance = null;
+      this.initialPinchCenterWorld = null;
+    }
+  }
+
   onPointerDown(e) {
+    // Nếu đang trong cử chỉ 2 ngón tay hoặc vừa thả tay sau khi pinch, bỏ qua không tạo nét vẽ
+    if (this.isPinching || (!this.isMultiPointMode && this.justFinishedPinching && (Date.now() - this.justFinishedPinching < 300))) {
+      return;
+    }
+
+    if (e.pointerType === 'touch' && !this.isMultiPointMode && e.isPrimary === false) {
+      // Ngón tay thứ 2 trở đi trong chế độ vẽ đơn điểm không được tạo nét vẽ
+      return;
+    }
+
     const screenPos = new Vec2(e.clientX, e.clientY);
     this.lastPointerScreen = screenPos;
     this.activePointers.set(e.pointerId, screenPos);
@@ -1254,6 +1549,7 @@ class NestedCanvasApp {
     // Chạm 2 ngón tay trên màn hình cảm ứng: Chuyển sang cử chỉ Phóng to/Thu nhỏ (Pinch Zoom) + Di chuyển 2 ngón (Pan)
     // CHỈ kích hoạt Pinch Zoom khi KHÔNG ở chế độ vẽ đa điểm
     if (!this.isMultiPointMode && this.activePointers.size >= 2) {
+      this.isPinching = true;
       this.activeSessions.clear();
       this.isDragging = false;
       this.isPanning = false;
@@ -1263,10 +1559,6 @@ class NestedCanvasApp {
       this.initialPinchZoom = this.camera.zoom;
       const midScreen = new Vec2((pts[0].x + pts[1].x) * 0.5, (pts[0].y + pts[1].y) * 0.5);
       this.initialPinchCenterWorld = this.camera.screenToWorld(midScreen);
-      return;
-    }
-
-    if (!this.isMultiPointMode && this.justFinishedPinching && (Date.now() - this.justFinishedPinching < 250)) {
       return;
     }
 
@@ -1538,26 +1830,74 @@ class NestedCanvasApp {
     const delta = screenPos.sub(this.lastPointerScreen);
     this.lastPointerScreen = screenPos;
 
-    if (this.activePointers && this.activePointers.has(e.pointerId)) {
+    // Luôn cập nhật vị trí ngón tay TRƯỚC — kể cả khi đang pinch
+    // để activePointers có tọa độ chính xác cho tính curDist
+    if (this.activePointers) {
       this.activePointers.set(e.pointerId, screenPos);
     }
 
-    // Xử lý phóng to/thu nhỏ 2 ngón tay (Pinch to Zoom) và di chuyển 2 ngón (Two-finger Pan) trên điện thoại
-    // CHỈ thực hiện Pinch-Zoom khi KHÔNG ở chế độ vẽ đa điểm
-    if (!this.isMultiPointMode && this.activePointers && this.activePointers.size >= 2 && this.initialPinchDistance && this.initialPinchCenterWorld) {
-      const pts = Array.from(this.activePointers.values());
-      const curDist = pts[0].distanceTo(pts[1]);
-      const curMidScreen = new Vec2((pts[0].x + pts[1].x) * 0.5, (pts[0].y + pts[1].y) * 0.5);
-      if (curDist > 5 && this.initialPinchDistance > 5) {
-        const factor = curDist / this.initialPinchDistance;
-        const newZoom = Math.max(0.05, Math.min(32.0, this.initialPinchZoom * factor));
-        this.camera.zoom = newZoom;
-        const screenCenter = new Vec2(this.camera.viewportWidth * 0.5, this.camera.viewportHeight * 0.5);
-        this.camera.pan = this.initialPinchCenterWorld.sub(curMidScreen.sub(screenCenter).scale(1.0 / newZoom));
-        this.updateZoomHUD();
-        this.broadcastCurrentCameraSync();
+    if (this.isPinching) {
+      // Trong chế độ pinch: chỉ xử lý zoom/pan, bỏ qua mọi thứ khác
+      if (!this.isMultiPointMode && this.activePointers && this.activePointers.size >= 2) {
+        if (!this.initialPinchDistance || !this.initialPinchCenterWorld) {
+          const pts = Array.from(this.activePointers.values());
+          if (pts.length >= 2) {
+            this.initialPinchDistance = Math.max(5, pts[0].distanceTo(pts[1]));
+            this.initialPinchZoom = this.camera.zoom;
+            const midScreen = new Vec2((pts[0].x + pts[1].x) * 0.5, (pts[0].y + pts[1].y) * 0.5);
+            this.initialPinchCenterWorld = this.camera.screenToWorld(midScreen);
+          }
+        }
+
+        if (this.initialPinchDistance && this.initialPinchCenterWorld) {
+          const pts = Array.from(this.activePointers.values());
+          if (pts.length >= 2) {
+            const curDist = pts[0].distanceTo(pts[1]);
+            const curMidScreen = new Vec2((pts[0].x + pts[1].x) * 0.5, (pts[0].y + pts[1].y) * 0.5);
+            if (curDist > 5 && this.initialPinchDistance > 5) {
+              const factor = curDist / this.initialPinchDistance;
+              const newZoom = Math.max(0.05, Math.min(32.0, this.initialPinchZoom * factor));
+              this.camera.zoom = newZoom;
+              const screenCenter = new Vec2(this.camera.viewportWidth * 0.5, this.camera.viewportHeight * 0.5);
+              this.camera.pan = this.initialPinchCenterWorld.sub(curMidScreen.sub(screenCenter).scale(1.0 / newZoom));
+              this.updateZoomHUD();
+              this.broadcastCurrentCameraSync();
+            }
+          }
+        }
       }
       return;
+    }
+
+    // Xử lý phóng to/thu nhỏ 2 ngón tay (Pointer API fallback khi không có isPinching)
+    if (!this.isMultiPointMode && this.activePointers && this.activePointers.size >= 2) {
+      if (!this.initialPinchDistance || !this.initialPinchCenterWorld) {
+        const pts = Array.from(this.activePointers.values());
+        if (pts.length >= 2) {
+          this.initialPinchDistance = Math.max(5, pts[0].distanceTo(pts[1]));
+          this.initialPinchZoom = this.camera.zoom;
+          const midScreen = new Vec2((pts[0].x + pts[1].x) * 0.5, (pts[0].y + pts[1].y) * 0.5);
+          this.initialPinchCenterWorld = this.camera.screenToWorld(midScreen);
+        }
+      }
+
+      if (this.initialPinchDistance && this.initialPinchCenterWorld) {
+        const pts = Array.from(this.activePointers.values());
+        if (pts.length >= 2) {
+          const curDist = pts[0].distanceTo(pts[1]);
+          const curMidScreen = new Vec2((pts[0].x + pts[1].x) * 0.5, (pts[0].y + pts[1].y) * 0.5);
+          if (curDist > 5 && this.initialPinchDistance > 5) {
+            const factor = curDist / this.initialPinchDistance;
+            const newZoom = Math.max(0.05, Math.min(32.0, this.initialPinchZoom * factor));
+            this.camera.zoom = newZoom;
+            const screenCenter = new Vec2(this.camera.viewportWidth * 0.5, this.camera.viewportHeight * 0.5);
+            this.camera.pan = this.initialPinchCenterWorld.sub(curMidScreen.sub(screenCenter).scale(1.0 / newZoom));
+            this.updateZoomHUD();
+            this.broadcastCurrentCameraSync();
+          }
+          return;
+        }
+      }
     }
 
     // 0. Cập nhật hộp khoanh vùng OCR
@@ -1653,6 +1993,21 @@ class NestedCanvasApp {
       if (wInput) wInput.value = Math.round(node.width);
       if (hInput) hInput.value = Math.round(node.height);
       this.broadcastCurrentCameraSync();
+
+      if (this.syncClient && this.syncClient.isConnected && !this.isApplyingRemoteSync) {
+        const now = performance.now();
+        if (!this._lastTransformSync || now - this._lastTransformSync >= 30) {
+          this._lastTransformSync = now;
+          this.syncClient.send('NODE_TRANSFORM', {
+            clientId: this.clientId,
+            nodeId: node.id,
+            x: node.transform.tx,
+            y: node.transform.ty,
+            w: node.width,
+            h: node.height,
+          });
+        }
+      }
       return;
     }
 
@@ -1666,6 +2021,21 @@ class NestedCanvasApp {
       this.draggingNode.transform.tx = this.dragInitialTransform.tx + deltaInParent.x;
       this.draggingNode.transform.ty = this.dragInitialTransform.ty + deltaInParent.y;
       this.broadcastCurrentCameraSync();
+
+      if (this.syncClient && this.syncClient.isConnected && !this.isApplyingRemoteSync) {
+        const now = performance.now();
+        if (!this._lastTransformSync || now - this._lastTransformSync >= 30) {
+          this._lastTransformSync = now;
+          this.syncClient.send('NODE_TRANSFORM', {
+            clientId: this.clientId,
+            nodeId: this.draggingNode.id,
+            x: this.draggingNode.transform.tx,
+            y: this.draggingNode.transform.ty,
+            w: this.draggingNode.width,
+            h: this.draggingNode.height,
+          });
+        }
+      }
       return;
     }
 
@@ -1685,29 +2055,45 @@ class NestedCanvasApp {
         const sharedRoot = this.getSharedRootForNode(targetId);
 
         if (this.syncClient && this.syncClient.isConnected) {
-          const smoothed = session.getSmoothedPoints ? session.getSmoothedPoints() : session.rawPoints;
-          const strokeSession = {
-            targetNodeId: targetId,
-            points: smoothed.map((p) => ({ x: p.x, y: p.y, pressure: p.pressure })),
-            color: session.color,
-            baseWidth: session.baseWidth,
-            brushType: session.brushType,
-          };
+          const now = performance.now();
+          if (!session._lastLiveSync || now - session._lastLiveSync >= 16) {
+            session._lastLiveSync = now;
+            const smoothed = session.getSmoothedPoints ? session.getSmoothedPoints() : session.rawPoints;
+            // Chỉ gửi delta: các điểm mới kể từ lần sync trước để giảm payload
+            const lastSentIdx = session._lastLiveSyncIdx || 0;
+            const deltaPoints = smoothed.slice(lastSentIdx);
+            session._lastLiveSyncIdx = smoothed.length;
 
-          // Gửi cho màn chiếu Canvas PC
-          this.syncClient.send('CANVAS_STROKE_LIVE', {
-            clientId: `${this.clientId}_${e.pointerId}`,
-            session: strokeSession,
-          });
+            if (deltaPoints.length > 0) {
+              const strokeSession = {
+                targetNodeId: targetId,
+                // Gửi full nếu lần đầu (để display có context), sau đó gửi delta
+                points: lastSentIdx === 0
+                  ? smoothed.map((p) => ({ x: p.x, y: p.y, pressure: p.pressure }))
+                  : deltaPoints.map((p) => ({ x: p.x, y: p.y, pressure: p.pressure })),
+                isDelta: lastSentIdx > 0,
+                color: session.color,
+                baseWidth: session.baseWidth,
+                brushType: session.brushType,
+              };
 
-          // Gửi cho phòng bảng con (nếu có chia sẻ)
-          if (sharedRoot) {
-            this.syncClient.send('STROKE_LIVE', {
-              clientId: `${this.clientId}_${e.pointerId}`,
-              boardId: sharedRoot.id,
-              nodeId: targetId,
-              session: strokeSession,
-            });
+              // Gửi cho màn chiếu Canvas PC
+              this.syncClient.send('CANVAS_STROKE_LIVE', {
+                clientId: `${this.clientId}_${e.pointerId}`,
+                session: strokeSession,
+                sendTime: Date.now(),
+              });
+
+              // Gửi cho phòng bảng con (nếu có chia sẻ)
+              if (sharedRoot) {
+                this.syncClient.send('STROKE_LIVE', {
+                  clientId: `${this.clientId}_${e.pointerId}`,
+                  boardId: sharedRoot.id,
+                  nodeId: targetId,
+                  session: strokeSession,
+                });
+              }
+            }
           }
         }
       }
@@ -1758,6 +2144,10 @@ class NestedCanvasApp {
   }
 
   onPointerUp(e) {
+    if (e.pointerType === 'touch') {
+      try { this.canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+    }
+
     if (this.activePointers) {
       this.activePointers.delete(e.pointerId);
       if (this.activePointers.size < 2) {
@@ -1787,11 +2177,11 @@ class NestedCanvasApp {
 
     if (this.isResizing) {
       const sharedRoot = this.getSharedRootForNode(this.resizingNode?.id);
-      if (sharedRoot && this.syncClient && this.syncClient.isConnected) {
+      if (this.syncClient && this.syncClient.isConnected) {
         this.syncClient.send('NODE_TRANSFORM', {
           clientId: this.clientId,
           nodeId: this.resizingNode.id,
-          boardId: sharedRoot.id,
+          boardId: sharedRoot ? sharedRoot.id : null,
           x: this.resizingNode.transform.tx,
           y: this.resizingNode.transform.ty,
           w: this.resizingNode.width,
@@ -1850,11 +2240,11 @@ class NestedCanvasApp {
           this.scene
         );
         const sharedRoot = this.getSharedRootForNode(this.draggingNode?.id);
-        if (sharedRoot && this.syncClient && this.syncClient.isConnected) {
+        if (this.syncClient && this.syncClient.isConnected) {
           this.syncClient.send('NODE_TRANSFORM', {
             clientId: this.clientId,
             nodeId: this.draggingNode.id,
-            boardId: sharedRoot.id,
+            boardId: sharedRoot ? sharedRoot.id : null,
             x: this.draggingNode.transform.tx,
             y: this.draggingNode.transform.ty,
             w: this.draggingNode.width,
@@ -1905,17 +2295,20 @@ class NestedCanvasApp {
         const sharedRoot = this.getSharedRootForNode(targetId);
 
         if (this.syncClient && this.syncClient.isConnected) {
-          this.syncClient.send('CANVAS_STROKE_LIVE', {
-            clientId: `${this.clientId}_${e.pointerId}`,
-            session: null,
-          });
+          const streamClientId = `${this.clientId}_${e.pointerId}`;
           this.syncClient.send('CANVAS_STROKE_ADD', {
             nodeId: targetId,
             stroke: stroke.toJSON(),
+            clientId: streamClientId,
+            sendTime: Date.now(),
+          });
+          this.syncClient.send('CANVAS_STROKE_LIVE', {
+            clientId: streamClientId,
+            session: null,
           });
           if (sharedRoot) {
             this.syncClient.send('STROKE_ADD', {
-              clientId: `${this.clientId}_${e.pointerId}`,
+              clientId: streamClientId,
               boardId: sharedRoot.id,
               nodeId: targetId,
               stroke: stroke.toJSON(),
@@ -2197,6 +2590,12 @@ class NestedCanvasApp {
     this.executeCommand(cmd, node.id);
     this.updateHierarchyTree();
     this.updateNodeProperties();
+    if (this.syncClient && this.syncClient.isConnected && !this.isApplyingRemoteSync) {
+      this.syncClient.send('NODE_CLEAR', {
+        clientId: this.clientId,
+        nodeId: node.id,
+      });
+    }
   }
 
   bringToFront(nodeId) {
@@ -2216,17 +2615,17 @@ class NestedCanvasApp {
     if (this.selectedNodeId === nodeId) {
       this.selectedNodeId = parentNode.id !== this.scene.root.id ? parentNode.id : (this.scene.root.children.length > 0 ? this.scene.root.children[0].id : null);
     }
-    if (sharedRoot && this.syncClient && this.syncClient.isConnected && !this.isApplyingRemoteSync) {
+    if (this.syncClient && this.syncClient.isConnected && !this.isApplyingRemoteSync) {
       this.syncClient.send('NODE_DELETE', {
         clientId: this.clientId,
-        boardId: sharedRoot.id,
+        boardId: sharedRoot ? sharedRoot.id : null,
         nodeId: nodeId,
       });
     }
     this.updateHierarchyTree();
     this.updateNodeProperties();
     this.updateUI();
-    this.saveState();
+    this.scheduleContentSave();
   }
 
   performErase(screenPos, node) {
@@ -2319,6 +2718,9 @@ class NestedCanvasApp {
         this.undo();
       }
       e.preventDefault();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      this.saveManualWorkspace();
+      e.preventDefault();
     } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
       this.redo();
       e.preventDefault();
@@ -2354,14 +2756,14 @@ class NestedCanvasApp {
       node.history.undo(this.scene);
       this.updateHierarchyTree();
       this.updateNodeProperties();
-      this.saveState();
+      this.scheduleContentSave();
       return;
     }
     if (this.history.canUndo()) {
       this.history.undo(this.scene);
       this.updateHierarchyTree();
       this.updateNodeProperties();
-      this.saveState();
+      this.scheduleContentSave();
     }
   }
 
@@ -2370,14 +2772,14 @@ class NestedCanvasApp {
       node.history.redo(this.scene);
       this.updateHierarchyTree();
       this.updateNodeProperties();
-      this.saveState();
+      this.scheduleContentSave();
       return;
     }
     if (this.history.canRedo()) {
       this.history.redo(this.scene);
       this.updateHierarchyTree();
       this.updateNodeProperties();
-      this.saveState();
+      this.scheduleContentSave();
     }
   }
 
@@ -2445,12 +2847,12 @@ class NestedCanvasApp {
     this.history.execute(new CreateNodeCommand(parent.id, newBoard), this.scene);
     this.selectedNodeId = newBoard.id;
 
-    // Nếu bảng cha thuộc phạm vi một bảng được chia sẻ, phát sóng NODE_CREATE đến phòng đó
+    // Phát sóng NODE_CREATE đến toàn bộ các thiết bị đang mở app (Phone, Web, Display)
     const sharedRoot = this.getSharedRootForNode(parent.id);
-    if (sharedRoot && this.syncClient && this.syncClient.isConnected && !this.isApplyingRemoteSync) {
+    if (this.syncClient && this.syncClient.isConnected && !this.isApplyingRemoteSync) {
       this.syncClient.send('NODE_CREATE', {
         clientId: this.clientId,
-        boardId: sharedRoot.id,
+        boardId: sharedRoot ? sharedRoot.id : null,
         parentId: parent.id,
         node: newBoard.toJSON(),
       });
@@ -2459,7 +2861,7 @@ class NestedCanvasApp {
     this.updateHierarchyTree();
     this.updateNodeProperties();
     this.updateUI();
-    this.saveState();
+    this.scheduleContentSave();
     return newBoard;
   }
 
@@ -2787,12 +3189,12 @@ class NestedCanvasApp {
     this.history.execute(new CreateNodeCommand(parent.id, desmosNode), this.scene);
     this.selectedNodeId = desmosNode.id;
 
-    // Nếu bảng cha thuộc phạm vi một bảng được chia sẻ, phát sóng NODE_CREATE đến phòng đó
+    // Phát sóng NODE_CREATE đến toàn bộ các thiết bị đang mở app (Phone, Web, Display)
     const sharedRoot = this.getSharedRootForNode(parent.id);
-    if (sharedRoot && this.syncClient && this.syncClient.isConnected && !this.isApplyingRemoteSync) {
+    if (this.syncClient && this.syncClient.isConnected && !this.isApplyingRemoteSync) {
       this.syncClient.send('NODE_CREATE', {
         clientId: this.clientId,
-        boardId: sharedRoot.id,
+        boardId: sharedRoot ? sharedRoot.id : null,
         parentId: parent.id,
         node: desmosNode.toJSON(),
       });
@@ -3144,8 +3546,8 @@ class NestedCanvasApp {
     const label = document.getElementById('label-current-theme');
     if (!btn || !popover || !themeContainer || !gridContainer) return;
 
-    this.globalTheme = this.globalTheme || this.scene.root.style || 'dark';
-    this.globalGrid = this.globalGrid || this.scene.root.gridType || 'dots';
+    this.globalTheme = this.globalTheme || this.scene.root.style || 'chalkboard';
+    this.globalGrid = this.globalGrid || this.scene.root.gridType || 'grid';
 
     const themes = [
       { id: 'chalkboard', name: 'Bảng Phấn', icon: '🏫', bg: '#142c22', border: '#84bba0', desc: 'Giảng đường' },
@@ -3164,8 +3566,8 @@ class NestedCanvasApp {
     ];
 
     const renderMenu = () => {
-      const currentThemeId = this.globalTheme || 'dark';
-      const currentGridId = this.globalGrid || 'dots';
+      const currentThemeId = this.globalTheme || 'chalkboard';
+      const currentGridId = this.globalGrid || 'grid';
       const currentThemeObj = themes.find((t) => t.id === currentThemeId) || themes[0];
       if (label) label.textContent = currentThemeObj.name;
 
@@ -3938,6 +4340,13 @@ class NestedCanvasApp {
 
     const cmd = new CreateNodeCommand(parentNode.id, textNode);
     this.executeCommand(cmd, parentNode.id);
+    if (this.syncClient && this.syncClient.isConnected && !this.isApplyingRemoteSync) {
+      this.syncClient.send('NODE_CREATE', {
+        clientId: this.clientId,
+        parentId: parentNode.id,
+        node: textNode.toJSON(),
+      });
+    }
 
     this.selectedNodeId = textNode.id;
     this.hideOcrPill();
@@ -4010,9 +4419,13 @@ class NestedCanvasApp {
     const btnCopyBoardUrl = document.getElementById('btn-copy-board-url');
     const inputBoardUrl = document.getElementById('input-board-share-url');
 
+    const isMobileClient = !!(window.Capacitor?.isNativePlatform() || window.location.protocol === 'capacitor:' || (window.location.hostname === 'localhost' && (!window.location.port || window.location.port === '')) || (typeof window !== 'undefined' && window.innerWidth <= 768 && !window.location.search.includes('display')));
+
     this.syncClient = new SyncClient({
       onPresence: (count, localIp, sharedBoards) => {
-        if (labelPresence) labelPresence.textContent = `${count} Thiết Bị`;
+        if (labelPresence) {
+          labelPresence.textContent = isMobileClient ? 'Đã đồng bộ' : `${count} Thiết Bị`;
+        }
         if (modalStatus) modalStatus.textContent = `🟢 Đang hoạt động (${count} thiết bị)`;
         const port = window.location.port || '3000';
         const url = `http://${localIp}:${port}`;
@@ -4041,7 +4454,20 @@ class NestedCanvasApp {
       onStatus: (connected) => {
         if (dotStatus) {
           dotStatus.style.background = connected ? '#3fb950' : '#f85149';
-          dotStatus.style.boxShadow = connected ? '0 0 6px #3fb950' : '0 0 6px #f85149';
+          dotStatus.style.boxShadow = connected ? '0 0 8px #3fb950' : '0 0 6px #f85149';
+        }
+        if (labelPresence) {
+          labelPresence.textContent = isMobileClient
+            ? (connected ? 'Đã đồng bộ' : 'Chưa đồng bộ')
+            : (connected ? `${this.syncClient.presenceCount} Thiết Bị` : 'Ngoại tuyến');
+        }
+        if (btnSync) {
+          btnSync.style.color = connected ? '#3fb950' : '#f85149';
+          btnSync.style.borderColor = connected ? 'rgba(63,185,80,0.45)' : 'rgba(248,81,73,0.35)';
+          btnSync.style.background = connected ? 'rgba(63,185,80,0.12)' : 'rgba(248,81,73,0.08)';
+          btnSync.title = connected
+            ? `🟢 Đang đồng bộ với Màn hình (${this.syncClient.getHost()}). Bấm để phát lại bài giảng.`
+            : '🔴 Chưa đồng bộ màn hình. Bấm để kết nối.';
         }
         if (modalStatus) {
           modalStatus.textContent = connected
@@ -4055,6 +4481,9 @@ class NestedCanvasApp {
           pillHost.style.color = connected ? '#3fb950' : '#f85149';
           pillHost.style.background = connected ? 'rgba(63,185,80,0.15)' : 'rgba(248,81,73,0.15)';
         }
+        if (connected) {
+          this.broadcastCanvasMirror();
+        }
       },
       onDiscovered: (ip, data) => {
         const inputServerHost = document.getElementById('input-server-host');
@@ -4063,9 +4492,20 @@ class NestedCanvasApp {
         if (scanStatus) {
           scanStatus.style.display = 'block';
           scanStatus.style.color = '#3fb950';
-          scanStatus.textContent = `🎉 Đã tìm thấy PC (${ip})!`;
+          scanStatus.textContent = `🎉 Đã tìm thấy Màn hình (${ip})!`;
         }
-        this.showToast(`🎉 Đã tự động phát hiện PC tại ${ip}!`, 3500);
+
+        // Tự động hoàn thành và đóng màn hình chờ Sync Gate
+        if (syncGateOverlay && syncGateOverlay.style.display !== 'none') {
+          if (syncGateTitle) syncGateTitle.textContent = `Đã Tìm Thấy Màn Hình: ${ip}!`;
+          if (syncGateDesc) syncGateDesc.textContent = `Đang kết nối ${data?.name || 'Màn hình tương tác'} & đồng bộ bài giảng...`;
+          if (syncGateProgressFill) syncGateProgressFill.style.width = '100%';
+          if (syncGateSpinner) syncGateSpinner.textContent = '✅';
+          if (syncGateIpHint) syncGateIpHint.textContent = `Tự động ghép nối thành công`;
+          setTimeout(closeSyncGate, 600);
+        }
+
+        this.showToast(`🎉 Đã tự động kết nối Màn hình tương tác tại ${ip}!`, 3500);
       },
     });
 
@@ -4147,9 +4587,7 @@ class NestedCanvasApp {
       });
     }
 
-    // === MÀN HÌNH CHỜ ĐỒNG BỘ BẮT BUỘC TRÊN MOBILE (SYNC GATE) ===
-    const isMobileClient = !!(window.Capacitor?.isNativePlatform() || window.location.protocol === 'capacitor:' || (window.location.hostname === 'localhost' && (!window.location.port || window.location.port === '')) || (typeof window !== 'undefined' && window.innerWidth <= 768 && !window.location.search.includes('display')));
-
+    // === HỘP THOẠI ĐỒNG BỘ MÀN HÌNH TƯƠNG TÁC (SYNC GATE) ===
     const syncGateOverlay = document.getElementById('mobile-sync-gate-overlay');
     const syncGateTitle = document.getElementById('sync-gate-title');
     const syncGateDesc = document.getElementById('sync-gate-desc');
@@ -4218,8 +4656,12 @@ class NestedCanvasApp {
     if (syncGateBtnOffline) {
       syncGateBtnOffline.addEventListener('click', (e) => {
         e.stopPropagation();
-        this.showToast('🚀 Đang mở ở chế độ Ngoại Tuyến (Offline)', 3000);
+        this.showToast('🚀 Mở chế độ độc lập (Tự động đồng bộ màn hình khi online)', 3500);
         closeSyncGate();
+        // Vẫn tiếp tục duy trì kết nối nền
+        if (!this.syncClient.isConnected) {
+          this.syncClient.connect();
+        }
       });
     }
 
@@ -4243,15 +4685,33 @@ class NestedCanvasApp {
       });
     }
 
-    if (isMobileClient && syncGateOverlay) {
-      syncGateOverlay.style.display = 'flex';
-      if (syncGateManualIp) syncGateManualIp.value = this.syncClient.getHost() || '192.168.1.121';
-      // Tự động quét dải mạng tìm PC động ngay lập tức
+    // Hoàn toàn không chặn màn hình khi khởi động: cho phép vẽ ngay lập tức!
+    if (syncGateOverlay) syncGateOverlay.style.display = 'none';
+    if (syncGateManualIp) syncGateManualIp.value = this.syncClient.getHost() || '192.168.1.25';
+
+    const btnCloseSyncGate = document.getElementById('btn-close-sync-gate');
+    if (btnCloseSyncGate) {
+      btnCloseSyncGate.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeSyncGate();
+      });
+    }
+    if (syncGateOverlay) {
+      syncGateOverlay.addEventListener('click', (e) => {
+        if (e.target === syncGateOverlay) {
+          closeSyncGate();
+        }
+      });
+    }
+
+    // Kết nối và nhận diện tự động trong nền
+    this.syncClient.connect();
+    if (isMobileClient) {
       setTimeout(() => {
-        startGateDiscovery();
-      }, 300);
-    } else {
-      this.syncClient.connect();
+        if (!this.syncClient.isConnected) {
+          startGateDiscovery();
+        }
+      }, 2000);
     }
 
     // Thiết lập Giao diện Mobile Single Board nếu người dùng truy cập ?board=...
@@ -4267,30 +4727,61 @@ class NestedCanvasApp {
     }
 
     // Nhận các sự kiện từ Sync Server
-    this.syncClient.on('WELCOME', (data) => {
-      // Nếu có dữ liệu toàn cảnh canvas từ PC, nạp vào scene của mobile
-      if (data.last_canvas_scene) {
-        try {
-          this.scene.loadFromJSON(data.last_canvas_scene);
-          if (data.last_canvas_camera) {
-            if (typeof data.last_canvas_camera.zoom === 'number' && data.last_canvas_camera.zoom > 0) {
-              this.camera.zoom = data.last_canvas_camera.zoom;
-            }
-            if (data.last_canvas_camera.pan && typeof data.last_canvas_camera.pan.x === 'number') {
-              this.camera.pan = new Vec2(data.last_canvas_camera.pan.x, data.last_canvas_camera.pan.y);
-            }
+    this.syncClient.on('WELCOME', async (data) => {
+      // CHỈ nạp dữ liệu từ server khi máy này hoàn toàn trống (chưa có nét vẽ nào)
+      const hasLocalStrokes = (this.scene.root.elements && this.scene.root.elements.length > 0) ||
+        (this.scene.root.children && this.scene.root.children.some(c => (c.elements && c.elements.length > 0) || c.graphData));
+
+      if (!hasLocalStrokes) {
+        if (data.active_session_content && this.sessionManager) {
+          try {
+            const remoteMeta = data.active_session_meta || {
+              id: data.active_session_id || 'default_session',
+              name: 'Phiên làm việc',
+              updatedAt: Date.now(),
+            };
+            await this.sessionManager.saveSessionSilently(remoteMeta, data.active_session_content);
+            this.sessionManager.currentSessionId = remoteMeta.id;
+            this.sessionManager.currentSessionMeta = remoteMeta;
+            this.applySessionContent(data.active_session_content);
+            this.updateActiveSessionUI(remoteMeta);
+            this.updateHierarchyTree();
+            this.updateUI();
+          } catch (e) {
+            console.warn('[App] Error syncing active session on WELCOME:', e);
           }
-          this.updateHierarchyTree();
-          this.updateUI();
-        } catch (e) {
-          console.warn('[App] Error applying last_canvas_scene:', e);
+        } else if (data.last_canvas_scene) {
+          try {
+            this.scene.loadFromJSON(data.last_canvas_scene);
+            if (data.last_canvas_camera) {
+              if (typeof data.last_canvas_camera.zoom === 'number' && data.last_canvas_camera.zoom > 0) {
+                this.camera.zoom = data.last_canvas_camera.zoom;
+              }
+              if (data.last_canvas_camera.pan && typeof data.last_canvas_camera.pan.x === 'number') {
+                this.camera.pan = new Vec2(data.last_canvas_camera.pan.x, data.last_canvas_camera.pan.y);
+              }
+            }
+            this.updateHierarchyTree();
+            this.updateUI();
+          } catch (e) {
+            console.warn('[App] Error applying last_canvas_scene:', e);
+          }
         }
+      }
+
+      // Luôn đồng bộ toàn bộ nét vẽ, theme, cấu hình bảng và góc nhìn camera hiện tại
+      // sang PC Display ngay khi kết nối thành công!
+      this.broadcastCanvasMirror();
+      this.broadcastCurrentCameraSync();
+      if (this._savedCastBoardId) {
+        const castNode = this.scene.getNode(this._savedCastBoardId);
+        if (castNode) this.castBoardToPC(castNode);
       }
 
       // Đóng màn hình Sync Gate khi đồng bộ xong
       if (syncGateOverlay && syncGateOverlay.style.display !== 'none') {
         if (syncGateTitle) syncGateTitle.textContent = 'Đồng Bộ Thành Công!';
-        if (syncGateDesc) syncGateDesc.textContent = `Đã kết nối PC (${this.syncClient.getHost()}) & tải xong bài giảng.`;
+        if (syncGateDesc) syncGateDesc.textContent = `Đã kết nối (${this.syncClient.getHost()}) & nạp phiên làm việc.`;
         if (syncGateProgressFill) syncGateProgressFill.style.width = '100%';
         if (syncGateSpinner) syncGateSpinner.textContent = '✅';
         if (syncGateIpHint) syncGateIpHint.textContent = `Sẵn sàng trên cổng ${this.syncClient.port || 8765}`;
@@ -4317,10 +4808,124 @@ class NestedCanvasApp {
       }
     });
 
+    // Cập nhật số lượng thiết bị khi nhận PRESENCE (tránh gửi lặp lại gây nghẽn mạng)
+    this.syncClient.on('PRESENCE', (data) => {
+      if (data && typeof data.count === 'number') {
+        const count = data.count;
+        const pillText = document.getElementById('lan-presence-count');
+        if (pillText) pillText.textContent = `${count} Thiết Bị`;
+      }
+    });
+
+    // 2. Nhận nét vẽ đang vẽ dở thời gian thực từ thiết bị khác (Live in-flight stroke)
+    this.syncClient.on('CANVAS_STROKE_LIVE', (data) => {
+      if (data.clientId && (data.clientId === this.clientId || data.clientId.startsWith(this.clientId + '_'))) return;
+      const { clientId, session } = data;
+      if (!clientId) return;
+      if (!session || !session.points || session.points.length === 0) {
+        this.remoteActiveSessions.delete(clientId);
+      } else if (session.isDelta && this.remoteActiveSessions.has(clientId)) {
+        // Chế độ delta: nối thêm điểm mới
+        const existing = this.remoteActiveSessions.get(clientId);
+        existing.points = existing.points.concat(session.points);
+      } else {
+        this.remoteActiveSessions.set(clientId, { ...session });
+      }
+    });
+
+    // 3. Nhận nét vẽ hoàn thành từ thiết bị khác
+    this.syncClient.on('CANVAS_STROKE_ADD', (data) => {
+      if (data.clientId && (data.clientId === this.clientId || data.clientId.startsWith(this.clientId + '_'))) return;
+      const { nodeId, stroke, clientId } = data;
+      if (clientId) {
+        this.remoteActiveSessions.delete(clientId);
+      }
+      if (!stroke) return;
+      const targetNode = (nodeId ? this.scene.getNode(nodeId) : null) || this.scene.root;
+      if (targetNode) {
+        const strokeObj = Stroke.fromJSON(stroke);
+        if (!Array.isArray(targetNode.elements)) targetNode.elements = [];
+        if (!targetNode.elements.some((s) => s.id === strokeObj.id)) {
+          targetNode.elements.push(strokeObj);
+        }
+        this.updateUI();
+      }
+    });
+
+    // 4. Nhận xóa nét vẽ từ thiết bị khác
+    this.syncClient.on('CANVAS_STROKE_ERASE', (data) => {
+      if (data.clientId && (data.clientId === this.clientId || data.clientId.startsWith(this.clientId + '_'))) return;
+      const { nodeId, removedStrokeIds } = data;
+      if (!Array.isArray(removedStrokeIds)) return;
+      const targetNode = (nodeId ? this.scene.getNode(nodeId) : null) || this.scene.root;
+      if (targetNode && Array.isArray(targetNode.elements)) {
+        const idSet = new Set(removedStrokeIds);
+        targetNode.elements = targetNode.elements.filter((s) => !idSet.has(s.id));
+        this.updateUI();
+      }
+    });
+
+    // 5. Nhận thay đổi màu nền & lưới từ thiết bị khác
+    this.syncClient.on('CANVAS_STYLE', (data) => {
+      if (!data) return;
+      const { nodeId, style, gridType, isGlobal } = data;
+      if (isGlobal || (!nodeId && (style || gridType))) {
+        if (style) this.scene.root.style = style;
+        if (gridType) this.scene.root.gridType = gridType;
+        const updateRecursive = (n) => {
+          if (style) n.style = style;
+          if (gridType) n.gridType = gridType;
+          if (Array.isArray(n.children)) {
+            for (const c of n.children) updateRecursive(c);
+          }
+        };
+        if (Array.isArray(this.scene.root.children)) {
+          for (const c of this.scene.root.children) updateRecursive(c);
+        }
+      } else if (nodeId) {
+        const target = this.scene.getNode(nodeId);
+        if (target) {
+          if (style) target.style = style;
+          if (gridType) target.gridType = gridType;
+        }
+      }
+      this.updateUI();
+    });
+
+    // 6. Nhận cập nhật phiên làm việc từ xa (CHỈ lưu ngầm vào DB, không ghi đè làm mất nét vẽ đang vẽ dở)
+    this.syncClient.on('SESSION_UPDATE', async (data) => {
+      if (data.sessionId && data.content && this.sessionManager) {
+        await this.sessionManager.saveSessionSilently(data.meta, data.content);
+      }
+    });
+
+    // 7. Nhận lệnh chuyển phiên làm việc từ xa
+    this.syncClient.on('SESSION_SWITCH', async (data) => {
+      if (data.clientId && (data.clientId === this.clientId || data.clientId.startsWith(this.clientId + '_'))) return;
+      if (data.sessionId && this.sessionManager) {
+        if (this.sessionManager.currentSessionId !== data.sessionId) {
+          const s = await this.sessionManager.switchSession(data.sessionId, false);
+          if (s && s.content) {
+            this.applySessionContent(s.content);
+            this.updateHierarchyTree();
+            this.updateUI();
+          }
+        }
+      }
+    });
+
     // Nhận toàn cảnh Canvas Mirror thời gian thực từ PC
     this.syncClient.on('CANVAS_MIRROR', (data) => {
+      // Đang có nét vẽ dở thì không ghi đè đột ngột
+      if (this.activeSessions && this.activeSessions.size > 0) return;
       if (data && data.scene) {
+        const hasLocalContent = (this.scene.root.elements && this.scene.root.elements.length > 0) ||
+          (this.scene.root.children && this.scene.root.children.some(c => (c.elements && c.elements.length > 0) || c.graphData));
+        if (hasLocalContent && !data.forceOverride) {
+          return;
+        }
         try {
+          this.isApplyingRemoteSync = true;
           this.scene.loadFromJSON(data.scene);
           if (data.camera) {
             if (typeof data.camera.zoom === 'number' && data.camera.zoom > 0) {
@@ -4337,8 +4942,24 @@ class NestedCanvasApp {
           }
         } catch (e) {
           console.warn('[App] Error applying CANVAS_MIRROR:', e);
+        } finally {
+          this.isApplyingRemoteSync = false;
         }
       }
+    });
+
+    // Nhận đồng bộ vị trí và tỉ lệ Camera thời gian thực từ thiết bị khác
+    this.syncClient.on('CANVAS_CAMERA_SYNC', (data) => {
+      if (data.clientId && (data.clientId === this.clientId || data.clientId.startsWith(this.clientId + '_'))) return;
+      if (this.isPanning || this.isPinching || (this.activeSessions && this.activeSessions.size > 0)) return;
+      if (typeof data.zoom === 'number' && data.zoom > 0) {
+        this.camera.zoom = data.zoom;
+      }
+      if (data.pan && typeof data.pan.x === 'number' && typeof data.pan.y === 'number') {
+        this.camera.pan = new Vec2(data.pan.x, data.pan.y);
+      }
+      this.updateZoomHUD();
+      this.updateUI();
     });
 
     this.syncClient.on('PLEASE_UPLOAD_BOARD', (data) => {
@@ -4383,10 +5004,27 @@ class NestedCanvasApp {
           targetNode.elements = node.elements.map((s) => Stroke.fromJSON(s));
         }
         if (node.children) {
-          targetNode.children = node.children.map((c) => CanvasNode.fromJSON(c));
+          targetNode.children = node.children.map((c) => CanvasNode.fromJSON(c)).filter(Boolean);
         }
         if (node.graphData) targetNode.graphData = node.graphData;
         if (node.textContent) targetNode.textContent = node.textContent;
+        if (node.image) {
+          if (typeof node.image === 'string') {
+            const img = new Image();
+            img.src = node.image;
+            if (!img.complete) {
+              img.onload = () => {
+                if (typeof CanvasNode.onImageLoaded === 'function') CanvasNode.onImageLoaded();
+              };
+            }
+            targetNode.image = img;
+          } else {
+            targetNode.image = node.image;
+          }
+        }
+        if (node.images && Array.isArray(node.images)) {
+          targetNode.images = node.images.map((imgData) => ImageElement.fromJSON(imgData)).filter(Boolean);
+        }
       } else if (this.isSingleBoardMode && this.singleBoardId === boardId) {
         targetNode = CanvasNode.fromJSON(node);
         this.scene.root.addChild(targetNode);
@@ -4419,7 +5057,15 @@ class NestedCanvasApp {
       if (!sharedRoot) return;
       if (this.isSingleBoardMode && sharedRoot.id !== this.singleBoardId) return;
 
-      this.remoteActiveSessions.set(data.clientId, data.session);
+      const { clientId, session } = data;
+      if (!session || !session.points || session.points.length === 0) {
+        this.remoteActiveSessions.delete(clientId);
+      } else if (session.isDelta && this.remoteActiveSessions.has(clientId)) {
+        const existing = this.remoteActiveSessions.get(clientId);
+        existing.points = existing.points.concat(session.points);
+      } else {
+        this.remoteActiveSessions.set(clientId, { ...session });
+      }
     });
 
     this.syncClient.on('STROKE_ADD', (data) => {
@@ -4461,15 +5107,16 @@ class NestedCanvasApp {
     });
 
     this.syncClient.on('NODE_CREATE', (data) => {
-      if (data.clientId === this.clientId) return;
+      if (data.clientId && (data.clientId === this.clientId || data.clientId.startsWith(this.clientId + '_'))) return;
       const { parentId, node: nodeData } = data;
-      if (!parentId || !nodeData) return;
+      if (!nodeData) return;
 
-      const sharedRoot = this.getSharedRootForNode(parentId);
-      if (!sharedRoot) return;
-      if (this.isSingleBoardMode && sharedRoot.id !== this.singleBoardId) return;
+      if (this.isSingleBoardMode && this.singleBoardId) {
+        const sharedRoot = this.getSharedRootForNode(parentId);
+        if (!sharedRoot || sharedRoot.id !== this.singleBoardId) return;
+      }
 
-      const parentNode = this.scene.getNode(parentId);
+      const parentNode = (parentId ? this.scene.getNode(parentId) : null) || this.scene.root;
       if (!parentNode) return;
 
       if (this.scene.getNode(nodeData.id)) return;
@@ -4483,26 +5130,28 @@ class NestedCanvasApp {
     });
 
     this.syncClient.on('NODE_TRANSFORM', (data) => {
-      if (data.clientId === this.clientId) return;
+      if (data.clientId && (data.clientId === this.clientId || data.clientId.startsWith(this.clientId + '_'))) return;
       const targetId = data.nodeId || data.boardId;
       if (!targetId || targetId === this.scene.root.id) return;
 
-      const sharedRoot = this.getSharedRootForNode(targetId);
-      if (!sharedRoot) return;
-      if (this.isSingleBoardMode && sharedRoot.id !== this.singleBoardId) return;
+      if (this.isSingleBoardMode && this.singleBoardId && targetId !== this.singleBoardId) {
+        const sharedRoot = this.getSharedRootForNode(targetId);
+        if (!sharedRoot || sharedRoot.id !== this.singleBoardId) return;
+      }
 
       const node = this.scene.getNode(targetId);
       if (node) {
-        node.transform.tx = data.x;
-        node.transform.ty = data.y;
-        node.width = data.w;
-        node.height = data.h;
+        if (typeof data.x === 'number') node.transform.tx = data.x;
+        if (typeof data.y === 'number') node.transform.ty = data.y;
+        if (typeof data.w === 'number') node.width = data.w;
+        if (typeof data.h === 'number') node.height = data.h;
         this.updateNodeProperties();
+        this.updateUI();
       }
     });
 
     this.syncClient.on('NODE_DELETE', (data) => {
-      if (data.clientId === this.clientId) return;
+      if (data.clientId && (data.clientId === this.clientId || data.clientId.startsWith(this.clientId + '_'))) return;
       const { nodeId } = data;
       if (!nodeId) return;
       if (this.isSingleBoardMode && nodeId === this.singleBoardId) {
@@ -4526,19 +5175,17 @@ class NestedCanvasApp {
     });
 
     this.syncClient.on('NODE_STYLE', (data) => {
+      if (data.clientId && (data.clientId === this.clientId || data.clientId.startsWith(this.clientId + '_'))) return;
       const targetId = data.nodeId || data.boardId;
-      const sharedRoot = this.getSharedRootForNode(targetId || data.boardId);
-      if (!sharedRoot) return;
-      if (this.isSingleBoardMode && sharedRoot.id !== this.singleBoardId) return;
 
       this.isApplyingRemoteSync = true;
-      if (data.isGlobal) {
+      if (data.isGlobal || !targetId) {
         const updateRecursive = (n) => {
           if (data.style) n.style = data.style;
           if (data.gridType) n.gridType = data.gridType;
           for (const c of n.children) updateRecursive(c);
         };
-        updateRecursive(sharedRoot);
+        updateRecursive(this.scene.root);
         this.updateNodeProperties();
       } else {
         const node = this.scene.getNode(targetId);
@@ -4548,14 +5195,28 @@ class NestedCanvasApp {
           this.updateNodeProperties();
         }
       }
+      this.updateUI();
       this.isApplyingRemoteSync = false;
     });
 
+    this.syncClient.on('NODE_CLEAR', (data) => {
+      if (data.clientId && (data.clientId === this.clientId || data.clientId.startsWith(this.clientId + '_'))) return;
+      const target = (data.nodeId ? this.scene.getNode(data.nodeId) : null) || this.scene.root;
+      if (target) {
+        this.isApplyingRemoteSync = true;
+        target.elements = [];
+        target.images = [];
+        this.updateHierarchyTree();
+        this.updateNodeProperties();
+        this.updateUI();
+        this.isApplyingRemoteSync = false;
+      }
+    });
+
     this.syncClient.on('GRAPH_EXPR', (data) => {
+      if (data.clientId && (data.clientId === this.clientId || data.clientId.startsWith(this.clientId + '_'))) return;
       const targetId = data.nodeId || data.boardId;
-      const sharedRoot = this.getSharedRootForNode(targetId);
-      if (!sharedRoot) return;
-      if (this.isSingleBoardMode && sharedRoot.id !== this.singleBoardId) return;
+      if (!targetId) return;
 
       const node = this.scene.getNode(targetId);
       if (node && node.graphData && data.expressions) {
@@ -4614,11 +5275,25 @@ class NestedCanvasApp {
       });
     }
 
-    // UI Buttons for global LAN Sync (Chỉ chia sẻ Bảng Con)
-    if (btnSync && modalSync) {
+    // UI Buttons for global LAN Sync & Màn hình tương tác
+    if (btnSync) {
       btnSync.addEventListener('click', (e) => {
         e.stopPropagation();
-        this.openGlobalLanSyncModal();
+        if (isMobileClient) {
+          if (this.syncClient && this.syncClient.isConnected) {
+            this.broadcastCanvasMirror();
+            this.showToast(`🟢 Đang đồng bộ với Màn hình (${this.syncClient.getHost()})! Đã phát lại toàn bộ bảng.`, 3000);
+          } else {
+            if (syncGateOverlay) {
+              syncGateOverlay.style.display = 'flex';
+              startGateDiscovery();
+            } else if (modalSync) {
+              this.openGlobalLanSyncModal();
+            }
+          }
+        } else {
+          this.openGlobalLanSyncModal();
+        }
       });
     }
 
@@ -4907,12 +5582,13 @@ class NestedCanvasApp {
       });
     });
 
-    // Khi xoay màn hình điện thoại (Portrait <-> Landscape), tự động căn chỉnh lại bảng
+    // Khi xoay màn hình điện thoại hoặc thay đổi kích thước cửa sổ, tự động đồng bộ camera
     window.addEventListener('resize', () => {
       if (this.isSingleBoardMode && this.singleBoardId) {
         const node = this.scene.getNode(this.singleBoardId);
         if (node) this.focusBoardFullscreen(node);
       }
+      this.broadcastCanvasCamera();
     });
   }
 
@@ -4987,12 +5663,15 @@ class NestedCanvasApp {
         } else {
           this.updateCastUIState('canvas', { name: 'Toàn Bộ Canvas' });
         }
-        // Tự động phát sóng toàn cảnh Canvas lên PC display
-        this.broadcastCanvasMirror();
       });
 
       this.syncClient.on('PLEASE_UPLOAD_CANVAS_MIRROR', () => {
         this.broadcastCanvasMirror();
+        this.broadcastCurrentCameraSync();
+        if (this._savedCastBoardId) {
+          const castNode = this.scene.getNode(this._savedCastBoardId);
+          if (castNode) this.castBoardToPC(castNode);
+        }
       });
     }
   }
@@ -5006,14 +5685,27 @@ class NestedCanvasApp {
 
   broadcastCanvasMirror() {
     if (!this.syncClient || !this.syncClient.isConnected) return;
-    this.syncClient.send('CANVAS_MIRROR', {
-      scene: this.scene.toJSON(),
-      camera: {
-        zoom: this.camera.zoom,
-        pan: { x: this.camera.pan.x, y: this.camera.pan.y },
-        viewport: { w: window.innerWidth, h: window.innerHeight },
-      },
-    });
+    if (this._mirrorDebounceTimer) clearTimeout(this._mirrorDebounceTimer);
+    this._mirrorDebounceTimer = setTimeout(() => {
+      this._mirrorDebounceTimer = null;
+      if (!this.syncClient || !this.syncClient.isConnected) return;
+      const currentTheme = this.globalTheme || this.scene.root.style || 'chalkboard';
+      const currentGrid = this.globalGrid || this.scene.root.gridType || 'grid';
+      this.scene.root.style = currentTheme;
+      this.scene.root.gridType = currentGrid;
+      this.syncClient.send('CANVAS_MIRROR', {
+        sessionId: this.sessionManager?.getCurrentSessionId(),
+        scene: this.scene.toJSON(),
+        theme: currentTheme,
+        gridType: currentGrid,
+        camera: {
+          zoom: this.camera.zoom,
+          pan: { x: this.camera.pan.x, y: this.camera.pan.y },
+          viewport: { w: window.innerWidth, h: window.innerHeight },
+        },
+        sendTime: Date.now(),
+      });
+    }, 60);
   }
 
   broadcastCanvasCamera() {
@@ -5028,6 +5720,7 @@ class NestedCanvasApp {
       if (!this.syncClient || !this.syncClient.isConnected) return;
       if (this.isFocusMode && !this.focusSyncDisplay) return;
       this.syncClient.send('CANVAS_CAMERA_SYNC', {
+        clientId: this.clientId,
         zoom: this.camera.zoom,
         pan: { x: this.camera.pan.x, y: this.camera.pan.y },
         viewport: { w: window.innerWidth, h: window.innerHeight },
@@ -5122,7 +5815,9 @@ class NestedCanvasApp {
   }
 
   broadcastCurrentCameraSync() {
-    this.saveState();
+    // KHÔNG gọi saveState() ở đây — camera sync được gọi liên tục trong khi pinch/pan,
+    // gọi saveState() mỗi frame sẽ trigger scene.toJSON() + scheduleCanvasMirrorBroadcast() gây lag nặng.
+    // saveState() chỉ được gọi khi kết thúc gesture (onTouchEnd / onPointerUp).
     this.broadcastCanvasCamera();
     if (this.isFocusMode && !this.focusSyncDisplay) return;
     if (!this.syncClient || !this.syncClient.currentCastBoardId) return;

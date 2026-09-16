@@ -1,5 +1,6 @@
 import { AABB, Vec2 } from './math.js';
 import { MathEvaluator } from './math_evaluator.js';
+import { CanvasNode } from './scene.js';
 
 export const BOARD_THEMES = {
   chalkboard: {
@@ -342,9 +343,9 @@ export class CanvasRenderer {
 
   drawInfiniteGrid(ctx, camera, screenW, screenH, scene = null) {
     const rootNode = scene ? scene.root : null;
-    const styleId = (rootNode && rootNode.style) || 'dark';
-    const gridType = (rootNode && rootNode.gridType) || 'dots';
-    const theme = BOARD_THEMES[styleId] || BOARD_THEMES.dark;
+    const styleId = (rootNode && rootNode.style) || 'chalkboard';
+    const gridType = (rootNode && rootNode.gridType) || 'grid';
+    const theme = BOARD_THEMES[styleId] || BOARD_THEMES.chalkboard;
 
     ctx.fillStyle = theme.bg;
     ctx.fillRect(0, 0, screenW, screenH);
@@ -484,13 +485,34 @@ export class CanvasRenderer {
     // Render Images inside this board (underneath strokes so you can draw on images)
     if (node.images && node.images.length > 0) {
       for (const imgEl of node.images) {
-        const imgBounds = imgEl.bounds.transform(innerContentScreenTransform);
-        if (effectiveScissor.intersects(imgBounds)) {
+        if (!imgEl) continue;
+        const imgBounds = imgEl.bounds ? imgEl.bounds.transform(innerContentScreenTransform) : null;
+        if (!imgBounds || effectiveScissor.intersects(imgBounds)) {
           const p0 = innerContentScreenTransform.transformPoint(new Vec2(imgEl.x, imgEl.y));
           const scaleX = innerContentScreenTransform.a || 1.0;
           const scaleY = innerContentScreenTransform.d || 1.0;
           try {
-            ctx.drawImage(imgEl.img, p0.x, p0.y, imgEl.width * scaleX, imgEl.height * scaleY);
+            if (imgEl.img instanceof HTMLImageElement || (typeof Image !== 'undefined' && imgEl.img instanceof Image)) {
+              if (imgEl.img.complete && imgEl.img.naturalWidth > 0) {
+                ctx.drawImage(imgEl.img, p0.x, p0.y, imgEl.width * scaleX, imgEl.height * scaleY);
+              } else if (!imgEl.img._hasLoadHandler) {
+                imgEl.img._hasLoadHandler = true;
+                imgEl.img.addEventListener('load', () => {
+                  if (typeof CanvasNode.onImageLoaded === 'function') {
+                    CanvasNode.onImageLoaded();
+                  }
+                });
+              }
+            } else if (typeof imgEl.img === 'string') {
+              const img = new Image();
+              img.src = imgEl.img;
+              imgEl.img = img;
+              img.onload = () => {
+                if (typeof CanvasNode.onImageLoaded === 'function') {
+                  CanvasNode.onImageLoaded();
+                }
+              };
+            }
           } catch (e) {}
         }
       }
@@ -501,10 +523,28 @@ export class CanvasRenderer {
       this.drawNodeTextContent(ctx, node, innerContentScreenTransform);
     }
 
-    // Render Strokes inside this board
+    // Render Strokes inside this board with zero-allocation fast culling
+    const { a: ta, b: tb, c: tc, d: td, tx: ttx, ty: tty } = innerContentScreenTransform;
+    const scMinX = effectiveScissor.minX, scMaxX = effectiveScissor.maxX;
+    const scMinY = effectiveScissor.minY, scMaxY = effectiveScissor.maxY;
+
     for (const stroke of node.elements) {
-      const strokeScreenBounds = stroke.bounds.transform(innerContentScreenTransform);
-      if (effectiveScissor.intersects(strokeScreenBounds)) {
+      const b = stroke.bounds;
+      const x1 = ta * b.minX + tc * b.minY + ttx;
+      const y1 = tb * b.minX + td * b.minY + tty;
+      const x2 = ta * b.maxX + tc * b.minY + ttx;
+      const y2 = tb * b.maxX + td * b.minY + tty;
+      const x3 = ta * b.minX + tc * b.maxY + ttx;
+      const y3 = tb * b.minX + td * b.maxY + tty;
+      const x4 = ta * b.maxX + tc * b.maxY + ttx;
+      const y4 = tb * b.maxX + td * b.maxY + tty;
+
+      const sMinX = Math.min(x1, x2, x3, x4);
+      const sMaxX = Math.max(x1, x2, x3, x4);
+      const sMinY = Math.min(y1, y2, y3, y4);
+      const sMaxY = Math.max(y1, y2, y3, y4);
+
+      if (sMinX <= scMaxX && sMaxX >= scMinX && sMinY <= scMaxY && sMaxY >= scMinY) {
         this.stats.renderedStrokes++;
         this.drawStroke(ctx, stroke, innerContentScreenTransform);
       } else {
@@ -538,7 +578,10 @@ export class CanvasRenderer {
     if (remoteSessions) {
       const sessions = remoteSessions instanceof Map ? Array.from(remoteSessions.values()) : (Array.isArray(remoteSessions) ? remoteSessions : [remoteSessions]);
       for (const rSession of sessions) {
-        if (rSession && rSession.targetNodeId === node.id && rSession.points && rSession.points.length >= 2) {
+        const matchesTarget = (rSession.targetNodeId === node.id) ||
+          (!rSession.targetNodeId && (node.id === 'root' || isRoot)) ||
+          (rSession.targetNodeId === 'root' && (node.id === 'root' || isRoot));
+        if (rSession && matchesTarget && rSession.points && rSession.points.length >= 2) {
           const rStroke = {
             points: rSession.points,
             color: rSession.color || '#388bfd',
@@ -1078,8 +1121,51 @@ export class CanvasRenderer {
       ctx.fillStyle = '#0d1117';
       ctx.fillRect(minX, bodyY, width, bodyH);
       try {
-        ctx.drawImage(node.image, minX, bodyY, width, bodyH);
-      } catch (e) {}
+        if (node.image instanceof HTMLImageElement || (typeof Image !== 'undefined' && node.image instanceof Image)) {
+          if (node.image.complete && node.image.naturalWidth > 0) {
+            ctx.drawImage(node.image, minX, bodyY, width, bodyH);
+          } else {
+            // Placeholder trong lúc ảnh đang giải mã / tải
+            ctx.fillStyle = '#161b22';
+            ctx.fillRect(minX, bodyY, width, bodyH);
+            ctx.fillStyle = '#8b949e';
+            ctx.font = '500 13px "Outfit", -apple-system, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('🖼️ Đang tải ảnh...', minX + width * 0.5, bodyY + bodyH * 0.5);
+
+            if (!node.image._hasLoadHandler) {
+              node.image._hasLoadHandler = true;
+              node.image.addEventListener('load', () => {
+                if (typeof CanvasNode.onImageLoaded === 'function') {
+                  CanvasNode.onImageLoaded();
+                }
+              });
+            }
+          }
+        } else if (typeof node.image === 'string') {
+          const img = new Image();
+          img.src = node.image;
+          node.image = img;
+          ctx.fillStyle = '#161b22';
+          ctx.fillRect(minX, bodyY, width, bodyH);
+          ctx.fillStyle = '#8b949e';
+          ctx.font = '500 13px "Outfit", -apple-system, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('🖼️ Đang tải ảnh...', minX + width * 0.5, bodyY + bodyH * 0.5);
+
+          img.onload = () => {
+            if (typeof CanvasNode.onImageLoaded === 'function') {
+              CanvasNode.onImageLoaded();
+            }
+          };
+        } else {
+          ctx.drawImage(node.image, minX, bodyY, width, bodyH);
+        }
+      } catch (e) {
+        console.warn('[Renderer] Error drawing node.image:', e);
+      }
     } else {
       // Bảng con thông thường -> Vẽ Nền và Lưới theo Theme & GridType
       ctx.fillStyle = theme.bg;
@@ -1190,16 +1276,17 @@ export class CanvasRenderer {
     const pts = stroke.points;
     const len = pts.length;
     const baseW = stroke.baseWidth || 3.0;
-    const scale = Math.hypot(transform.a, transform.b) || 1.0;
+    const { a, b, c, d, tx, ty } = transform;
+    const scale = Math.hypot(a, b) || 1.0;
     const brushType = stroke.brushType || 'solid';
 
-    // Safely pre-transform points into screen coordinates
-    const screenPoints = new Array(len);
-    for (let i = 0; i < len; i++) {
-      const p = pts[i];
-      const rawPt = p && p.pos ? p.pos : p;
-      screenPoints[i] = rawPt ? transform.transformPoint(rawPt) : new Vec2(0, 0);
-    }
+    const tracePath = () => {
+      ctx.beginPath();
+      ctx.moveTo(a * pts[0].x + c * pts[0].y + tx, b * pts[0].x + d * pts[0].y + ty);
+      for (let i = 1; i < len; i++) {
+        ctx.lineTo(a * pts[i].x + c * pts[i].y + tx, b * pts[i].x + d * pts[i].y + ty);
+      }
+    };
 
     if (brushType === 'highlighter') {
       ctx.globalAlpha = 0.4;
@@ -1208,12 +1295,7 @@ export class CanvasRenderer {
       ctx.lineCap = 'square';
       ctx.lineJoin = 'miter';
       ctx.lineWidth = Math.max(6, baseW * scale * 3.5);
-
-      ctx.beginPath();
-      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
-      for (let i = 1; i < len; i++) {
-        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
-      }
+      tracePath();
       ctx.stroke();
     } else if (brushType === 'neon') {
       // Bút Dạ Quang: Lớp hào quang phát sáng + Lõi sáng
@@ -1225,11 +1307,7 @@ export class CanvasRenderer {
       ctx.shadowBlur = 14 * Math.min(scale, 2.0);
       ctx.strokeStyle = stroke.color;
       ctx.lineWidth = Math.max(2, baseW * scale * 1.5);
-      ctx.beginPath();
-      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
-      for (let i = 1; i < len; i++) {
-        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
-      }
+      tracePath();
       ctx.stroke();
 
       // 2. Lõi sáng trắng
@@ -1243,12 +1321,7 @@ export class CanvasRenderer {
       ctx.lineJoin = 'round';
       ctx.setLineDash([8 * Math.min(scale, 2.0), 6 * Math.min(scale, 2.0)]);
       ctx.lineWidth = Math.max(0.8, baseW * scale);
-
-      ctx.beginPath();
-      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
-      for (let i = 1; i < len; i++) {
-        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
-      }
+      tracePath();
       ctx.stroke();
     } else if (brushType === 'dotted') {
       ctx.strokeStyle = stroke.color;
@@ -1256,12 +1329,7 @@ export class CanvasRenderer {
       ctx.lineJoin = 'round';
       ctx.setLineDash([1, 8 * Math.min(scale, 2.0)]);
       ctx.lineWidth = Math.max(1.2, baseW * scale);
-
-      ctx.beginPath();
-      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
-      for (let i = 1; i < len; i++) {
-        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
-      }
+      tracePath();
       ctx.stroke();
     } else if (brushType === 'chalk') {
       // Phấn viết bảng: Nét mộc xước tự nhiên
@@ -1271,12 +1339,7 @@ export class CanvasRenderer {
       ctx.globalAlpha = 0.85;
       ctx.setLineDash([2, 1]);
       ctx.lineWidth = Math.max(1, baseW * scale * 1.15);
-
-      ctx.beginPath();
-      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
-      for (let i = 1; i < len; i++) {
-        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
-      }
+      tracePath();
       ctx.stroke();
     } else if (brushType === 'calligraphy') {
       // Bút Thư Pháp: Biến thiên độ dày theo góc chuyển động vát 45 độ
@@ -1284,11 +1347,13 @@ export class CanvasRenderer {
       ctx.lineCap = 'square';
       ctx.lineJoin = 'round';
 
+      let prevX = a * pts[0].x + c * pts[0].y + tx;
+      let prevY = b * pts[0].x + d * pts[0].y + ty;
       for (let i = 0; i < len - 1; i++) {
-        const pA = screenPoints[i];
-        const pB = screenPoints[i + 1];
-        const dx = pB.x - pA.x;
-        const dy = pB.y - pA.y;
+        const nextX = a * pts[i + 1].x + c * pts[i + 1].y + tx;
+        const nextY = b * pts[i + 1].x + d * pts[i + 1].y + ty;
+        const dx = nextX - prevX;
+        const dy = nextY - prevY;
         const angle = Math.atan2(dy, dx);
         const angleFactor = Math.abs(Math.sin(angle - Math.PI * 0.25));
         const pressure = ((pts[i].pressure || 0.8) + (pts[i + 1].pressure || 0.8)) * 0.5;
@@ -1296,9 +1361,11 @@ export class CanvasRenderer {
 
         ctx.lineWidth = dynamicW;
         ctx.beginPath();
-        ctx.moveTo(pA.x, pA.y);
-        ctx.lineTo(pB.x, pB.y);
+        ctx.moveTo(prevX, prevY);
+        ctx.lineTo(nextX, nextY);
         ctx.stroke();
+        prevX = nextX;
+        prevY = nextY;
       }
     } else {
       // Bút mực tiêu chuẩn (Solid)
@@ -1306,12 +1373,7 @@ export class CanvasRenderer {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.lineWidth = Math.max(0.5, baseW * scale);
-
-      ctx.beginPath();
-      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
-      for (let i = 1; i < len; i++) {
-        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
-      }
+      tracePath();
       ctx.stroke();
     }
 

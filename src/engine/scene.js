@@ -95,29 +95,77 @@ export class Stroke {
 import { HistoryManager } from './history.js';
 
 export class ImageElement {
-  constructor(img, x, y, width, height) {
-    this.id = generateUUID();
-    this.img = img;
+  constructor(img, x, y, width, height, id = null) {
+    this.id = id || generateUUID();
     this.x = x;
     this.y = y;
     this.width = width;
     this.height = height;
+
+    if (typeof img === 'string') {
+      this.src = img;
+      this.img = new Image();
+      this.img.src = img;
+      if (!this.img.complete) {
+        this.img.onload = () => {
+          if (typeof CanvasNode.onImageLoaded === 'function') {
+            CanvasNode.onImageLoaded();
+          }
+        };
+      }
+    } else {
+      this.img = img;
+      this.src = img?.src || null;
+    }
+
     this.recalculateBounds();
   }
 
   recalculateBounds() {
     this.bounds = AABB.fromOriginSize(this.x, this.y, this.width, this.height);
   }
+
+  toJSON() {
+    let src = this.src || this.img?.src || (typeof this.img === 'string' ? this.img : null);
+    return {
+      id: this.id,
+      x: this.x,
+      y: this.y,
+      width: this.width,
+      height: this.height,
+      src: src,
+    };
+  }
+
+  static fromJSON(data) {
+    if (!data) return null;
+    return new ImageElement(data.src || data.img, data.x, data.y, data.width, data.height, data.id);
+  }
 }
 
 export class CanvasNode {
+  static onImageLoaded = null;
+
   constructor(name = 'Sub Canvas', width = 600, height = 450, transform = Transform2D.identity(), image = null, graphData = null, style = 'chalkboard', gridType = 'grid') {
     this.id = generateUUID();
     this.name = name;
     this.width = Math.max(100, width);
     this.height = Math.max(100, height);
     this.transform = transform;
-    this.image = image; // HTMLImageElement nếu canvas này là một bảng ảnh lồng nhau
+    if (typeof image === 'string') {
+      const img = new Image();
+      img.src = image;
+      if (!img.complete) {
+        img.onload = () => {
+          if (typeof CanvasNode.onImageLoaded === 'function') {
+            CanvasNode.onImageLoaded();
+          }
+        };
+      }
+      this.image = img;
+    } else {
+      this.image = image; // HTMLImageElement nếu canvas này là một bảng ảnh lồng nhau
+    }
     this.graphData = graphData; // Dữ liệu toán học nếu canvas này là bảng đồ thị hàm số
     this.style = style || 'chalkboard'; // Phong cách màu (chalkboard, whiteboard, blueprint, midnight, warmpaper, dark)
     this.gridType = gridType || 'grid'; // Kiểu lưới (grid, dots, lines, none)
@@ -230,6 +278,19 @@ export class CanvasNode {
   }
 
   toJSON() {
+    let imageSrc = null;
+    if (this.image) {
+      if (typeof this.image === 'string') {
+        imageSrc = this.image;
+      } else if (this.image instanceof HTMLImageElement || (typeof Image !== 'undefined' && this.image instanceof Image)) {
+        imageSrc = this.image.src || null;
+      } else if (this.image.toDataURL) {
+        try {
+          imageSrc = this.image.toDataURL();
+        } catch (e) {}
+      }
+    }
+
     return {
       id: this.id,
       name: this.name,
@@ -237,6 +298,8 @@ export class CanvasNode {
       height: this.height,
       style: this.style,
       gridType: this.gridType,
+      image: imageSrc,
+      images: (this.images || []).map((img) => (typeof img?.toJSON === 'function' ? img.toJSON() : img)),
       transform: {
         a: this.transform?.a ?? 1,
         b: this.transform?.b ?? 0,
@@ -266,6 +329,7 @@ export class CanvasNode {
   }
 
   static fromJSON(data) {
+    if (!data) return null;
     const tr = data.transform || {};
     const t = new Transform2D(
       tr.a ?? 1,
@@ -275,12 +339,30 @@ export class CanvasNode {
       tr.tx ?? (tr.x ?? 0),
       tr.ty ?? (tr.y ?? 0)
     );
+
+    let imgObj = null;
+    if (data.image) {
+      if (typeof data.image === 'string') {
+        imgObj = new Image();
+        imgObj.src = data.image;
+        if (!imgObj.complete) {
+          imgObj.onload = () => {
+            if (typeof CanvasNode.onImageLoaded === 'function') {
+              CanvasNode.onImageLoaded();
+            }
+          };
+        }
+      } else if (data.image instanceof HTMLImageElement || (typeof Image !== 'undefined' && data.image instanceof Image)) {
+        imgObj = data.image;
+      }
+    }
+
     const node = new CanvasNode(
       data.name,
       data.width,
       data.height,
       t,
-      null,
+      imgObj,
       data.graphData,
       data.style,
       data.gridType
@@ -293,8 +375,11 @@ export class CanvasNode {
     if (data.elements) {
       node.elements = data.elements.map((s) => Stroke.fromJSON(s));
     }
+    if (data.images && Array.isArray(data.images)) {
+      node.images = data.images.map((imgData) => ImageElement.fromJSON(imgData)).filter(Boolean);
+    }
     if (data.children) {
-      node.children = data.children.map((c) => CanvasNode.fromJSON(c));
+      node.children = data.children.map((c) => CanvasNode.fromJSON(c)).filter(Boolean);
     }
     return node;
   }
@@ -303,6 +388,7 @@ export class CanvasNode {
 export class SceneGraph {
   constructor() {
     this.root = new CanvasNode('World Canvas', 1000000, 1000000, Transform2D.identity());
+    this.root.id = 'root';
   }
 
   toJSON() {
@@ -314,15 +400,17 @@ export class SceneGraph {
   loadFromJSON(json) {
     if (!json || !json.root) return;
     this.root = CanvasNode.fromJSON(json.root);
+    this.root.id = 'root';
     this.root.width = 1000000;
     this.root.height = 1000000;
   }
 
   get rootId() {
-    return this.root.id;
+    return this.root.id || 'root';
   }
 
   getNode(id) {
+    if (!id || id === 'root' || id === this.root.id) return this.root;
     return this.root.findNode(id);
   }
 

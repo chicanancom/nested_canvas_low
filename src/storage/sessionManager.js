@@ -22,6 +22,7 @@ export class SessionManager {
     this.currentSessionMeta = null;
     this.syncClient = options.syncClient || null;
     this.onSessionChangeCallback = options.onSessionChange || null;
+    this.onAutoSaveCallback = options.onAutoSave || null;
     this.autoSaveTimer = null;
     this.isSaving = false;
     this.hasPendingSave = false;
@@ -152,7 +153,7 @@ export class SessionManager {
   /**
    * Chuyển sang một phiên khác
    */
-  async switchSession(sessionId) {
+  async switchSession(sessionId, broadcast = true) {
     if (!sessionId) return null;
 
     // Lưu phiên hiện tại ngay lập tức trước khi chuyển
@@ -173,7 +174,7 @@ export class SessionManager {
     }
 
     // Thông báo cho sync server nếu có
-    if (this.syncClient && this.syncClient.isConnected) {
+    if (broadcast && this.syncClient && this.syncClient.isConnected) {
       this.syncClient.send('SESSION_SWITCH', {
         sessionId: session.meta.id,
         sessionName: session.meta.name,
@@ -181,6 +182,24 @@ export class SessionManager {
     }
 
     return session;
+  }
+
+  /**
+   * Lưu hoặc cập nhật phiên từ Sync Server mà không kích hoạt auto-save echo loop
+   */
+  async saveSessionSilently(meta, content) {
+    if (!meta || !meta.id || !content) return;
+    try {
+      await db.saveSession(meta, content);
+      if (this.currentSessionId === meta.id) {
+        this.currentSessionMeta = meta;
+        if (this.onSessionChangeCallback) {
+          this.onSessionChangeCallback(meta);
+        }
+      }
+    } catch (e) {
+      console.warn('[SessionManager] saveSessionSilently error:', e);
+    }
   }
 
   /**
@@ -251,7 +270,8 @@ export class SessionManager {
   }
 
   /**
-   * Tự động lưu ngầm (Debounced Auto-Save)
+   * Tự động lưu ngầm vào IndexedDB (Debounced 1500ms khi người dùng ngừng vẽ)
+   * Ghi đè trực tiếp vào bản ghi sessionId hiện tại trong DB cục bộ
    */
   scheduleAutoSave(scene, camera, boardCounter, selectedNodeId, currentCastBoardId = null) {
     this.pendingSaveArgs = {
@@ -269,7 +289,23 @@ export class SessionManager {
     this.autoSaveTimer = setTimeout(() => {
       this.autoSaveTimer = null;
       this._performSave();
-    }, 600);
+    }, 1500);
+  }
+
+  /**
+   * Lưu phiên làm việc thủ công (Explicit Manual Save)
+   */
+  async saveCurrentSession(scene, camera, boardCounter, selectedNodeId, currentCastBoardId = null) {
+    if (!this.currentSessionId) return null;
+    this.pendingSaveArgs = {
+      scene: scene ? scene.toJSON() : null,
+      camera: camera ? { zoom: camera.zoom, pan: { x: camera.pan.x, y: camera.pan.y } } : null,
+      boardCounter,
+      selectedNodeId,
+      currentCastBoardId,
+    };
+    await this._performSave();
+    return this.currentSessionMeta;
   }
 
   async flushSave() {
@@ -324,22 +360,27 @@ export class SessionManager {
         savedAt: now,
       };
 
+      // 1. Ghi đè trực tiếp vào bản ghi IndexedDB của chính session này
       await db.saveSession(meta, content);
       this.currentSessionMeta = meta;
 
-      // Lưu 1 bản backup nhẹ vào localStorage phòng hờ
+      // 2. Báo hiệu lưu thành công cho giao diện
+      if (this.onAutoSaveCallback) {
+        this.onAutoSaveCallback(this.currentSessionMeta);
+      }
+
+      // 3. Lưu 1 bản backup nhẹ vào localStorage phòng hờ
       try {
         localStorage.setItem('nestedcanvas_active_session_id', this.currentSessionId);
       } catch (e) { }
 
-      // Sao lưu lên sync server nếu đang kết nối LAN
-      if (this.syncClient && this.syncClient.isConnected) {
-        this.syncClient.send('SESSION_BACKUP', {
-          sessionId: this.currentSessionId,
-          meta,
-          content,
-        });
-      }
+
+      // SESSION_BACKUP bị tắt trong autosave — server sẽ relay SESSION_UPDATE
+      // tới display gây reset camera liên tục. Chỉ gửi backup khi lưu thủ công.
+      // if (this.syncClient && this.syncClient.isConnected) {
+      //   this.syncClient.send('SESSION_BACKUP', { ... });
+      // }
+
     } catch (err) {
       console.warn('[SessionManager] Auto-save error:', err);
     } finally {

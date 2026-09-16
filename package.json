@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "cap:sync": "npx cap sync android",
     "build:apk": "./build_apk.sh",
-    "pc:display": "electron electron/main.cjs"
+    "pc:display": "electron electron/main.cjs",
+    "clean:cache": "rm -f server/data/sync_state.json"
   },
   "devDependencies": {
     "@capacitor/android": "^6.2.2",

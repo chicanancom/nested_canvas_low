@@ -30,6 +30,28 @@ export class SyncClient {
     this.onDiscoveredCallback = options.onDiscovered || null;
     this.failedConnectAttempts = 0;
     this.isAutoDiscovering = false;
+
+    // Lắng nghe tín hiệu Native UDP Broadcast từ Màn hình tương tác
+    if (typeof window !== 'undefined') {
+      window.addEventListener('nestedcanvas:server_discovered', (e) => {
+        const { ip, port, name } = e.detail || {};
+        if (ip) {
+          // Nếu đã kết nối ổn định hoặc đang bắt tay kết nối với host này rồi thì không reconnect
+          if (this.host === ip && (this.isConnected || (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)))) {
+            return;
+          }
+          console.log(`[SyncClient] 📡 Native UDP beacon received: ${ip}:${port || this.port} (${name})`);
+          if (ip !== this.host) {
+            this.setHost(ip);
+          } else if (!this.isConnected || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            this.connect();
+          }
+          if (typeof this.onDiscoveredCallback === 'function') {
+            this.onDiscoveredCallback(ip, { app: 'nestedcanvas', port: port || this.port, name });
+          }
+        }
+      });
+    }
   }
 
   _resolveDefaultHost() {
@@ -56,7 +78,7 @@ export class SyncClient {
     const isCapacitor = !!(window.Capacitor?.isNativePlatform() || window.location.protocol === 'capacitor:' || (window.location.hostname === 'localhost' && (!window.location.port || window.location.port === '')));
     if (isCapacitor) {
       // Mặc định trỏ về IP của máy tính đang chạy backend
-      return '192.168.1.121';
+      return '192.168.1.25';
     }
 
     return window.location.hostname || 'localhost';
@@ -85,6 +107,21 @@ export class SyncClient {
    */
   async _detectSubnetCandidates() {
     const subnets = new Set();
+
+    // 0. Ưu tiên số 1: IP Wi-Fi thật của máy Android thông qua Native Bridge
+    try {
+      let nativeIp = null;
+      if (typeof window !== 'undefined') {
+        if (window.__ANDROID_LOCAL_IP__) nativeIp = window.__ANDROID_LOCAL_IP__;
+        else if (window.AndroidNative && typeof window.AndroidNative.getLocalIp === 'function') {
+          nativeIp = window.AndroidNative.getLocalIp();
+        }
+      }
+      if (nativeIp && /^(\d{1,3}\.){3}\d{1,3}$/.test(nativeIp)) {
+        const parts = nativeIp.split('.');
+        subnets.add(`${parts[0]}.${parts[1]}.${parts[2]}.`);
+      }
+    } catch (e) {}
 
     // 1. Thêm subnet từ host hiện tại
     if (this.host && /^(\d{1,3}\.){3}\d{1,3}$/.test(this.host)) {
@@ -143,6 +180,11 @@ export class SyncClient {
    * @returns {Promise<{ success: boolean, ip?: string, data?: any }>}
    */
   async discoverServer(opts = {}) {
+    // Nếu đã kết nối ổn định rồi thì không quét lại để tránh nghẽn socket
+    if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      return { success: true, ip: this.host };
+    }
+
     const timeoutMs = opts.timeoutMs || 600;
     const port = this.port || 8765;
     const onProgress = opts.onProgress || (() => {});
@@ -150,8 +192,8 @@ export class SyncClient {
 
     console.log('[SyncClient] 🔍 Starting LAN Auto-Discovery on port', port);
 
-    // 1. Thử ping nhanh máy chủ host hiện tại, 192.168.1.121 và localhost trước
-    const quickTargets = Array.from(new Set([this.host, '192.168.1.121', '127.0.0.1', 'localhost'].filter(Boolean)));
+    // 1. Thử ping nhanh máy chủ host hiện tại, 192.168.1.25, 192.168.1.121 và localhost trước
+    const quickTargets = Array.from(new Set([this.host, '192.168.1.25', '192.168.1.121', '127.0.0.1', 'localhost'].filter(Boolean)));
     for (const target of quickTargets) {
       onProgress({ scanned: 1, total: 100, currentIp: target });
       const res = await this._pingServer(target, port, 400);
@@ -241,7 +283,7 @@ export class SyncClient {
       });
     }
 
-    // 1. Thử HTTP GET /health trước
+    // 1. Chỉ dùng HTTP GET /health siêu nhẹ (vài chục bytes), tuyệt đối không mở WebSocket probe hàng loạt
     try {
       const url = `http://${ip}:${port}/health`;
       const res = await fetch(url, {
@@ -256,49 +298,7 @@ export class SyncClient {
           return { success: true, data };
         }
       }
-    } catch (e) {
-      // Fetch có thể bị lỗi mạng hoặc Mixed-Content trên một số WebView
-    }
-
-    // 2. Thử WebSocket probe handshake trực tiếp nếu fetch chưa được
-    if (!controller.signal.aborted) {
-      try {
-        const wsOk = await new Promise((resolve) => {
-          let ws = null;
-          let settled = false;
-          const finish = (result) => {
-            if (settled) return;
-            settled = true;
-            if (ws) {
-              try { ws.close(); } catch (_) {}
-            }
-            resolve(result);
-          };
-
-          const wsTimer = setTimeout(() => finish(false), Math.min(350, timeoutMs));
-
-          try {
-            ws = new WebSocket(`ws://${ip}:${port}`);
-            ws.onopen = () => {
-              clearTimeout(wsTimer);
-              finish(true);
-            };
-            ws.onerror = () => {
-              clearTimeout(wsTimer);
-              finish(false);
-            };
-          } catch (_) {
-            clearTimeout(wsTimer);
-            finish(false);
-          }
-        });
-
-        if (wsOk) {
-          clearTimeout(timeoutId);
-          return { success: true, data: { app: 'nestedcanvas', ip, port } };
-        }
-      } catch (e) {}
-    }
+    } catch (e) {}
 
     clearTimeout(timeoutId);
     return { success: false };
@@ -308,6 +308,9 @@ export class SyncClient {
     if (!newHost) return;
     const cleanHost = newHost.replace(/^https?:\/\//, '').replace(/^wss?:\/\//, '').split(':')[0].trim();
     if (!cleanHost) return;
+    if (this.host === cleanHost && (this.isConnected || (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)))) {
+      return; // Không reconnect nếu host không đổi và đang kết nối ổn định!
+    }
     this.host = cleanHost;
     this.localIp = cleanHost;
     try {
@@ -335,6 +338,26 @@ export class SyncClient {
 
   connect() {
     this.isManualClose = false;
+
+    // 1. Tuyệt đối không tạo socket mới nếu đã có socket đang kết nối hoặc đang bắt tay
+    if (this.ws) {
+      if (this.ws.readyState === WebSocket.OPEN && this.isConnected) {
+        return; // Đang kết nối ổn định rồi
+      }
+      if (this.ws.readyState === WebSocket.CONNECTING) {
+        return; // Đang bắt tay kết nối, chờ kết quả
+      }
+      // Dọn dẹp triệt để socket cũ trước khi tạo socket mới
+      try {
+        this.ws.onopen = null;
+        this.ws.onmessage = null;
+        this.ws.onerror = null;
+        this.ws.onclose = null;
+        this.ws.close();
+      } catch (e) {}
+      this.ws = null;
+    }
+
     const protocol = this._resolveProtocol(this.host);
     const url = `${protocol}//${this.host}:${this.port}`;
 

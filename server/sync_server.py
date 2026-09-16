@@ -43,6 +43,16 @@ SHARED_BOARDS: Dict[str, Dict[str, Any]] = {}
 # Optional master scene cache
 CURRENT_SCENE_STATE: Optional[Dict[str, Any]] = None
 
+# Canvas mirror cache (scene + camera từ điện thoại gửi lên)
+CURRENT_CANVAS_MIRROR: Optional[Dict[str, Any]] = None
+
+# Debounce task cho PRESENCE broadcast
+_presence_task: Optional[asyncio.Task] = None
+
+# Server generation ID — tăng mỗi lần khởi động để client phát hiện server restart
+import time as _time
+SERVER_GENERATION_ID: str = str(int(_time.time()))
+
 
 def get_local_ip() -> str:
     """Detect local LAN IPv4 address."""
@@ -122,19 +132,29 @@ async def broadcast_board_presence(board_id: str):
 
 
 async def broadcast_presence():
-    """Notify all clients of current connected device count and shared boards."""
-    count = len(CONNECTED_CLIENTS)
-    presence_msg = json.dumps({
-        "type": "PRESENCE",
-        "count": count,
-        "local_ip": get_local_ip(),
-        "shared_boards": list(SHARED_BOARDS.values())
-    })
-    await broadcast(presence_msg)
+    """Debounced PRESENCE broadcast — gộm các sự kiện connect/disconnect nhanh thành 1 lần gửi."""
+    global _presence_task
+
+    # Hủy task cũ nếu đang chờ
+    if _presence_task and not _presence_task.done():
+        _presence_task.cancel()
+
+    async def _delayed():
+        await asyncio.sleep(0.2)  # Debounce 200ms
+        count = len(CONNECTED_CLIENTS)
+        msg = json.dumps({
+            "type": "PRESENCE",
+            "count": count,
+            "local_ip": get_local_ip(),
+            "shared_boards": list(SHARED_BOARDS.values())
+        })
+        await broadcast(msg)
+
+    _presence_task = asyncio.create_task(_delayed())
 
 
 async def handle_client(websocket: WebSocketServerProtocol):
-    global CURRENT_SCENE_STATE
+    global CURRENT_SCENE_STATE, CURRENT_CANVAS_MIRROR
     CONNECTED_CLIENTS.add(websocket)
     CLIENT_SUBSCRIPTIONS[websocket] = set()
     client_ip = websocket.remote_address[0] if websocket.remote_address else "unknown"
@@ -146,10 +166,14 @@ async def handle_client(websocket: WebSocketServerProtocol):
             "count": len(CONNECTED_CLIENTS),
             "local_ip": get_local_ip(),
             "shared_boards": list(SHARED_BOARDS.values()),
-            "has_scene": CURRENT_SCENE_STATE is not None
+            "has_scene": CURRENT_CANVAS_MIRROR is not None,
+            "server_gen": SERVER_GENERATION_ID,
         }
-        if CURRENT_SCENE_STATE is not None:
-            welcome_payload["scene"] = CURRENT_SCENE_STATE
+        # Gửi canvas mirror đã cache cho client mới kết nối
+        if CURRENT_CANVAS_MIRROR is not None:
+            welcome_payload["active_session_content"] = CURRENT_CANVAS_MIRROR
+            welcome_payload["last_canvas_scene"] = CURRENT_CANVAS_MIRROR.get("scene")
+            welcome_payload["last_canvas_camera"] = CURRENT_CANVAS_MIRROR.get("camera")
 
         await websocket.send(json.dumps(welcome_payload))
         await broadcast_presence()
@@ -162,8 +186,36 @@ async def handle_client(websocket: WebSocketServerProtocol):
 
             msg_type = data.get("type")
 
+            # 0a. Display yêu cầu canvas mới nhất: yêu cầu điện thoại đẩy lên
+            if msg_type == "GET_CANVAS_MIRROR":
+                if CURRENT_CANVAS_MIRROR is not None:
+                    # Gửi ngay cache cho display
+                    mirror_msg = json.dumps({
+                        "type": "CANVAS_MIRROR",
+                        **CURRENT_CANVAS_MIRROR
+                    })
+                    await websocket.send(mirror_msg)
+                else:
+                    # Yêu cầu điện thoại đẩy canvas mới lên
+                    await broadcast(json.dumps({"type": "PLEASE_UPLOAD_CANVAS_MIRROR"}), sender=websocket)
+
+            # 0b. Điện thoại gửi canvas mirror → lưu cache + relay cho display
+            elif msg_type == "CANVAS_MIRROR":
+                scene = data.get("scene")
+                if scene:
+                    CURRENT_CANVAS_MIRROR = {
+                        "scene": scene,
+                        "camera": data.get("camera"),
+                        "theme": data.get("theme"),
+                        "gridType": data.get("gridType"),
+                        "sessionId": data.get("sessionId"),
+                    }
+                    logger.info(f"💾 Cached CANVAS_MIRROR from {client_ip}")
+                # Relay đến tất cả client khác (kể cả display)
+                await broadcast(message, sender=websocket)
+
             # 1. Share or Unshare a Board
-            if msg_type == "SHARE_BOARD":
+            elif msg_type == "SHARE_BOARD":
                 board_id = data.get("boardId")
                 node = data.get("node")
                 is_shared = data.get("isShared", False)
