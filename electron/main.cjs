@@ -123,18 +123,22 @@ async function createWindow() {
     console.warn(`[Display Window] ⚠️ Load failed: ${errorCode} - ${errorDescription}`);
   });
 
-  const isViteUp = await checkUrlActive('http://localhost:3000/display.html');
+  const distDir = path.join(__dirname, '../dist');
+  const distDisplayHtml = path.join(distDir, 'display.html');
 
-  if (isViteUp) {
-    console.log('[Electron PC Display] Connecting to active Vite dev server (http://localhost:3000)...');
-    mainWindow.loadURL('http://localhost:3000/display.html');
-  } else {
-    const distDir = path.join(__dirname, '../dist');
+  if (fs.existsSync(distDisplayHtml)) {
     const port = await startLocalStaticServer(distDir, 3100);
     if (port) {
+      console.log(`[Electron PC Display] ⚡ Instant load (<50ms) from http://127.0.0.1:${port}/display.html`);
       mainWindow.loadURL(`http://127.0.0.1:${port}/display.html`);
     } else {
-      mainWindow.loadFile(path.join(distDir, 'display.html'));
+      mainWindow.loadFile(distDisplayHtml);
+    }
+  } else {
+    const isViteUp = await checkUrlActive('http://localhost:3000/display.html');
+    if (isViteUp) {
+      console.log('[Electron PC Display] Connecting to active Vite dev server (http://localhost:3000)...');
+      mainWindow.loadURL('http://localhost:3000/display.html');
     }
   }
 

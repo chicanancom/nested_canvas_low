@@ -167,6 +167,7 @@ export class CanvasNode {
       this.image = image; // HTMLImageElement nếu canvas này là một bảng ảnh lồng nhau
     }
     this.graphData = graphData; // Dữ liệu toán học nếu canvas này là bảng đồ thị hàm số
+    this.youtubeData = null; // Dữ liệu video YouTube được nhúng trong bảng
     this.style = style || 'chalkboard'; // Phong cách màu (chalkboard, whiteboard, blueprint, midnight, warmpaper, dark)
     this.gridType = gridType || 'grid'; // Kiểu lưới (grid, dots, lines, none)
     this.contentPan = new Vec2(0, 0); // Vị trí cuộn/di chuyển vô tận bên trong bảng con
@@ -321,6 +322,7 @@ export class CanvasNode {
             bounds: this.graphData.bounds,
           }
         : null,
+      youtubeData: this.youtubeData ? { ...this.youtubeData } : null,
       elements: (this.elements || []).map((s) => (typeof s?.toJSON === 'function' ? s.toJSON() : s)),
       children: (this.children || []).map((c) => (typeof c?.toJSON === 'function' ? c.toJSON() : c)),
       textContent: this.textContent,
@@ -369,6 +371,7 @@ export class CanvasNode {
     );
     if (data.id) node.id = data.id;
     if (data.isShared !== undefined) node.isShared = !!data.isShared;
+    if (data.youtubeData?.videoId) node.youtubeData = { ...data.youtubeData };
     if (data.contentPan) node.contentPan = new Vec2(data.contentPan.x, data.contentPan.y);
     if (data.contentZoom) node.contentZoom = data.contentZoom;
     if (data.textContent) node.textContent = data.textContent;

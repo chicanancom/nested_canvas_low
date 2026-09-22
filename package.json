@@ -11,6 +11,8 @@
     "preview": "vite preview",
     "cap:sync": "npx cap sync android",
     "build:apk": "./build_apk.sh",
+    "build:apk:lan": "node scripts/build-apk-lan.mjs",
+    "serve:lan": "vite preview --host 0.0.0.0 --port 3200 --strictPort",
     "pc:display": "electron electron/main.cjs",
     "clean:cache": "rm -f server/data/sync_state.json"
   },

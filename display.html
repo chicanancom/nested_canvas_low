@@ -51,6 +51,9 @@
         pointer-events: none !important; /* Hoàn toàn không tương tác */
       }
 
+      #display-video-overlays { position:absolute; inset:0; z-index:8; pointer-events:none; }
+      #display-video-overlays iframe { position:absolute; border:0; border-radius:8px; box-shadow:0 8px 28px rgba(0,0,0,.35); }
+
       /* Màn hình chờ - chỉ hiện thoáng qua khi chưa có bất kỳ dữ liệu canvas nào */
       #idle-overlay {
         position: absolute;
@@ -92,15 +95,12 @@
       <div class="display-canvas-container" id="display-canvas-container">
         <canvas id="display-canvas"></canvas>
       </div>
+      <div id="display-video-overlays" aria-hidden="true"></div>
 
-      <!-- Thanh Điều Khiển Màn Chiếu Nổi (Tự động hiện khi rê chuột hoặc dùng phím 1, 2, 3) -->
-      <div id="display-controls-hud" style="position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 8px; padding: 6px 14px; background: rgba(15, 23, 42, 0.90); border: 1px solid rgba(88, 166, 255, 0.35); border-radius: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.6); backdrop-filter: blur(16px); transition: opacity 0.35s ease, transform 0.35s ease; opacity: 0; pointer-events: none;">
-        <span style="font-size: 11px; font-weight: 700; color: #8b949e; letter-spacing: 0.5px; text-transform: uppercase; margin-right: 4px;">🖥️ MÀN CHIẾU:</span>
-        <button id="btn-pc-mode-single" class="btn-action active" style="padding: 4px 10px; font-size: 11px; border-radius: 16px;" title="Chiếu 1 bảng toàn màn hình (Phím 1)">1 Bảng (1)</button>
-        <button id="btn-pc-mode-dual" class="btn-action" style="padding: 4px 10px; font-size: 11px; border-radius: 16px;" title="Chiếu 2 bảng song song ghép đôi (Phím 2)">2 Bảng Song Song (2)</button>
-        <button id="btn-pc-mode-grid" class="btn-action" style="padding: 4px 10px; font-size: 11px; border-radius: 16px;" title="Chiếu tất cả bảng dạng lưới (Phím 3)">Lưới Tất Cả (3)</button>
-        <div style="width: 1px; height: 16px; background: rgba(255,255,255,0.15); margin: 0 2px;"></div>
-        <button id="btn-pc-fullscreen" class="btn-action" style="padding: 4px 10px; font-size: 11px; border-radius: 16px;" title="Toàn màn hình (F11)">⛶ F11</button>
+      <!-- Floating Page Transition Toast (Hiển thị nhẹ 2.5s khi chuyển trang) -->
+      <div id="display-page-toast" style="position: absolute; top: 16px; left: 50%; transform: translateX(-50%) translateY(-20px); z-index: 100; padding: 5px 14px; background: rgba(15, 23, 42, 0.92); border: 1px solid rgba(88, 166, 255, 0.4); border-radius: 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); backdrop-filter: blur(16px); color: #f0f6fc; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; pointer-events: none; opacity: 0; transition: opacity 0.3s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1); display: flex; align-items: center; gap: 6px;">
+        <span id="display-toast-icon">📄</span>
+        <span id="display-toast-text">Trang 1</span>
       </div>
 
       <!-- Màn hình chờ chuyên nghiệp (tự động ẩn khi có nét vẽ hoặc bảng được chiếu) -->
@@ -132,8 +132,10 @@
       </div>
 
       <!-- Góc thông báo trạng thái nhẹ nhàng (Floating status pill) -->
-      <div id="display-status-pill" style="position: absolute; bottom: 16px; right: 16px; z-index: 40; padding: 6px 14px; background: rgba(13, 17, 23, 0.75); border: 1px solid rgba(88, 166, 255, 0.2); border-radius: 20px; font-size: 11.5px; color: #8b949e; display: flex; align-items: center; gap: 8px; backdrop-filter: blur(10px); pointer-events: none; transition: opacity 0.4s ease; opacity: 0.85;">
-        <span id="display-pill-dot" style="width: 7px; height: 7px; border-radius: 50%; background: #3fb950; box-shadow: 0 0 6px #3fb950;"></span>
+      <div id="display-status-pill" style="position: absolute; bottom: 10px; right: 10px; z-index: 40; padding: 4px 10px; background: rgba(13, 17, 23, 0.75); border: 1px solid rgba(88, 166, 255, 0.2); border-radius: 14px; font-size: 9.5px; color: #8b949e; display: flex; align-items: center; gap: 6px; backdrop-filter: blur(10px); pointer-events: none; transition: opacity 0.4s ease; opacity: 0.85;">
+        <span id="display-pill-dot" style="width: 5px; height: 5px; border-radius: 50%; background: #3fb950; box-shadow: 0 0 4px #3fb950;"></span>
+        <span id="display-pill-page" style="font-weight: 600; color: #58a6ff;">Trang 1 / 1</span>
+        <span style="opacity: 0.35;">•</span>
         <span id="display-pill-text">Màn chiếu sẵn sàng</span>
       </div>
     </div>

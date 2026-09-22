@@ -44,7 +44,7 @@ export default defineConfig({
     port: 3000,
     host: true,
     watch: {
-      ignored: ['**/android/**', '**/build-apk/**', '**/server/data/**', '**/.gradle/**'],
+      ignored: ['**/dist/**', '**/.gemini/**', '**/android/**', '**/build-apk/**', '**/server/data/**', '**/.gradle/**'],
     },
   },
   build: {

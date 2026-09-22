@@ -19,6 +19,25 @@
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
+#popover-disp-settings {
+  max-height: calc(100dvh - 120px);
+  overflow-y: auto;
+  max-width: calc(100vw - 24px);
+}
+.display-selection-select {
+  width: 100%;
+  padding: 8px;
+  background: #18212d;
+  color: #f0f6fc;
+  border: 1px solid #52647a;
+  border-radius: 6px;
+}
+#display-page-picker { max-height: 180px; overflow-y: auto; }
+.display-picker-hint { font-size: 11px; color: #aab8c8; margin: 4px 0 8px; }
+.display-page-choice { display: flex; align-items: center; gap: 8px; padding: 7px 2px; font-size: 12px; cursor: pointer; }
+.display-page-choice input { accent-color: #58a6ff; }
+.display-page-choice:has(input:disabled) { opacity: .5; }
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -201,7 +220,6 @@ canvas {
   opacity: 1;
 }
 
-/* Bottom Brush & Color Bar */
 .bottom-bar {
   position: absolute;
   bottom: 24px;
@@ -213,6 +231,12 @@ canvas {
   gap: 16px;
   padding: 0 18px;
   z-index: 50;
+  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.bottom-bar.hidden-bar,
+.mobile-palette-drawer.hidden-bar {
+  display: none !important;
 }
 
 .brush-types {
@@ -2097,4 +2121,39 @@ html, body, #app, .canvas-container, canvas {
 .sync-gate-link-btn:hover {
   color: #c9d1d9;
   text-decoration: underline;
+}
+#video-overlays { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+#video-overlays iframe { position: absolute; border: 0; border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.35); pointer-events: auto; }
+
+#video-overlays [data-node-id] { pointer-events: auto; }
+
+.youtube-control {
+  min-width: 38px;
+  height: 34px;
+  border: 1px solid rgba(255,255,255,.35);
+  border-radius: 6px;
+  background: rgba(15,23,42,.9);
+  color: #fff;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: transform 100ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+.youtube-control:hover { background: #334155; }
+.youtube-control:active, #btn-add-youtube:active { transform: scale(.9); }
+.youtube-control:focus-visible { outline: 2px solid #93c5fd; outline-offset: 3px; }
+.youtube-control.is-sent {
+  background: #166534;
+  border-color: #86efac;
+  box-shadow: 0 0 0 3px rgba(74,222,128,.28);
+}
+.youtube-control.is-failed {
+  background: #7f1d1d;
+  border-color: #fca5a5;
+  box-shadow: 0 0 0 3px rgba(248,113,113,.25);
+}
+.youtube-remote { cursor: grab; }
+.youtube-remote.is-dragging { cursor: grabbing; outline: 2px solid rgba(147,197,253,.8); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .youtube-control { transition: none; }
+  .youtube-control:active, #btn-add-youtube:active { transform: none; }
 }

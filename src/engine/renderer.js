@@ -112,6 +112,12 @@ export class CanvasRenderer {
     this.canvas = canvas;
     this.isDisplayMode = !!options.isDisplayMode;
     this.ctx = canvas.getContext('2d', { alpha: false });
+    // Older Android WebViews lack roundRect; keep the canvas usable there.
+    if (this.ctx && !this.ctx.roundRect) {
+      this.ctx.roundRect = function (x, y, width, height) {
+        this.rect(x, y, width, height);
+      };
+    }
     this.stats = {
       fps: 60,
       renderedNodes: 0,
@@ -124,15 +130,17 @@ export class CanvasRenderer {
     this.fpsTimer = performance.now();
     this.cachedWidth = 0;
     this.cachedHeight = 0;
+    this.cachedDpr = 0;
     this.resize();
   }
 
   resize() {
     const dpr = window.devicePixelRatio || 1;
-    const width = window.innerWidth;
-    const height = window.innerHeight;
+    const width = Math.max(1, window.innerWidth);
+    const height = Math.max(1, window.innerHeight);
 
-    if (this.cachedWidth !== width || this.cachedHeight !== height) {
+    if (this.cachedWidth !== width || this.cachedHeight !== height || this.cachedDpr !== dpr) {
+      this.cachedDpr = dpr;
       this.cachedWidth = width;
       this.cachedHeight = height;
       this.canvas.width = width * dpr;
@@ -143,6 +151,8 @@ export class CanvasRenderer {
   }
 
   render(scene, camera, selectedNodeId, activeSession, eraserCursor, ocrSelectionBox = null, ocrHighlightBoxes = null, remoteSessions = null, options = null) {
+    // WebView can change viewport/DPR during activity startup or resume.
+    this.resize();
     if (options && typeof options.isDisplayMode === 'boolean') {
       this.isDisplayMode = options.isDisplayMode;
     }
@@ -444,7 +454,9 @@ export class CanvasRenderer {
         }
         this.stats.renderedNodes++;
 
-        if (child.image) {
+        if (child.youtubeData) {
+          this.drawYoutubeNode(ctx, child, childBounds, child.id === selectedNodeId, camera.zoom);
+        } else if (child.image) {
           this.drawImageNode(ctx, child, childBounds, child.id === selectedNodeId, camera.zoom);
         } else if (child.graphData) {
           this.drawGraphNode(ctx, child, childBounds, child.id === selectedNodeId, camera.zoom);
@@ -500,7 +512,7 @@ export class CanvasRenderer {
         for (const sess of localSessions) {
           if (sess) {
             const livePoints = sess.getSmoothedPoints ? sess.getSmoothedPoints() : sess.rawPoints;
-            if (livePoints && livePoints.length >= 2) {
+            if (livePoints && livePoints.length >= 1) {
               const liveStroke = {
                 points: livePoints,
                 color: sess.color,
@@ -517,7 +529,7 @@ export class CanvasRenderer {
       if (remoteSessions) {
         const sessions = remoteSessions instanceof Map ? Array.from(remoteSessions.values()) : (Array.isArray(remoteSessions) ? remoteSessions : [remoteSessions]);
         for (const rSession of sessions) {
-          if (rSession && rSession.points && rSession.points.length >= 2) {
+          if (rSession && rSession.points && rSession.points.length >= 1) {
             const rStroke = {
               points: rSession.points,
               color: rSession.color || '#388bfd',
@@ -908,6 +920,28 @@ export class CanvasRenderer {
     }
   }
 
+  drawYoutubeNode(ctx, node, screenBounds, isSelected, zoom) {
+    const { minX, minY, width, height } = screenBounds;
+    const radius = 8;
+    ctx.save();
+    ctx.beginPath(); ctx.roundRect(minX, minY, width, height, radius); ctx.clip();
+    ctx.fillStyle = '#111827'; ctx.fillRect(minX, minY, width, height);
+    ctx.fillStyle = 'rgba(0,0,0,0.36)'; ctx.fillRect(minX, minY, width, height);
+    ctx.fillStyle = '#ff0033';
+    ctx.beginPath(); ctx.roundRect(minX + width / 2 - 34, minY + height / 2 - 24, 68, 48, 12); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath();
+    ctx.moveTo(minX + width / 2 - 7, minY + height / 2 - 13);
+    ctx.lineTo(minX + width / 2 + 15, minY + height / 2);
+    ctx.lineTo(minX + width / 2 - 7, minY + height / 2 + 13); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = `600 ${Math.max(11, Math.min(16, 14 * zoom))}px Outfit, sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText(node.name || 'YouTube', minX + width / 2, minY + 12, Math.max(40, width - 24));
+    ctx.restore();
+    ctx.strokeStyle = isSelected ? '#58a6ff' : '#334155'; ctx.lineWidth = isSelected ? 2.5 : 1.2;
+    ctx.beginPath(); ctx.roundRect(minX, minY, width, height, radius); ctx.stroke();
+    if (isSelected && zoom > 0.15) this.drawResizeHandles(ctx, screenBounds);
+  }
+
   drawNodeTextContent(ctx, node, innerContentScreenTransform) {
     if (!node.textContent) return;
     const p0 = innerContentScreenTransform.transformPoint(new Vec2(20, 24));
@@ -978,7 +1012,7 @@ export class CanvasRenderer {
   }
 
   drawStroke(ctx, stroke, transform) {
-    if (!stroke.points || stroke.points.length < 2) return;
+    if (!stroke.points || stroke.points.length === 0) return;
 
     ctx.save();
     const pts = stroke.points;
@@ -987,6 +1021,26 @@ export class CanvasRenderer {
     const { a, b, c, d, tx, ty } = transform;
     const scale = Math.hypot(a, b) || 1.0;
     const brushType = stroke.brushType || 'solid';
+
+    // A tap is a real single-point stroke, visible before pointer-up too.
+    if (len === 1) {
+      const p = pts[0];
+      const width = brushType === 'highlighter'
+        ? Math.max(6, baseW * scale * 3.5)
+        : Math.max(1, baseW * scale);
+      ctx.fillStyle = stroke.color;
+      if (brushType === 'highlighter') ctx.globalAlpha = 0.4;
+      if (brushType === 'chalk') ctx.globalAlpha = 0.85;
+      if (brushType === 'neon') {
+        ctx.shadowColor = stroke.color;
+        ctx.shadowBlur = 14 * Math.min(scale, 2);
+      }
+      ctx.beginPath();
+      ctx.arc(a * p.x + c * p.y + tx, b * p.x + d * p.y + ty, width / 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
 
     const tracePath = () => {
       ctx.beginPath();
@@ -1006,7 +1060,7 @@ export class CanvasRenderer {
       tracePath();
       ctx.stroke();
     } else if (brushType === 'neon') {
-      // Bút Dạ Quang: Lớp hào quang phát sáng + Lõi sáng
+      // Bút Dạ Quang: hào quang và lõi nét cùng màu đã chọn.
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
 
@@ -1018,9 +1072,9 @@ export class CanvasRenderer {
       tracePath();
       ctx.stroke();
 
-      // 2. Lõi sáng trắng
+      // 2. Lõi nét giữ nguyên màu bút
       ctx.shadowBlur = 0;
-      ctx.strokeStyle = '#ffffff';
+      ctx.strokeStyle = stroke.color;
       ctx.lineWidth = Math.max(0.8, baseW * scale * 0.4);
       ctx.stroke();
     } else if (brushType === 'dashed') {

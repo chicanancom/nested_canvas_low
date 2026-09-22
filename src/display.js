@@ -16,6 +16,8 @@ class PCDisplayApp {
     this.scene = new SceneGraph();
     this.camera = new Camera(0, 0, 1.0, window.innerWidth, window.innerHeight);
     this.remoteActiveSessions = new Map();
+    this.youtubeAudioUnlocked = false;
+    this.youtubePlayback = new Map();
 
     CanvasNode.onImageLoaded = () => {
       this.hasSceneData = this.hasMeaningfulContent();
@@ -27,6 +29,9 @@ class PCDisplayApp {
     this.statusPill = document.getElementById('display-status-pill');
     this.pillDot = document.getElementById('display-pill-dot');
     this.pillText = document.getElementById('display-pill-text');
+    this.pillPage = document.getElementById('display-pill-page');
+    this.toastElement = document.getElementById('display-page-toast');
+    this.toastText = document.getElementById('display-toast-text');
     this.idleStatusText = document.getElementById('idle-status-text');
     this.idleStatusDot = document.getElementById('idle-status-dot');
 
@@ -41,13 +46,13 @@ class PCDisplayApp {
     this.targetZoom = null;
     this.targetPan = null;
     this._saveStateTimer = null;
+    this._toastTimer = null;
 
     // Multi-Page & Multi-Board Display Mode State
     this.pages = [];
     this.currentPageIndex = 0;
     this.displayMode = 'single'; // 'single', 'dual', 'grid'
-    this.hudElement = document.getElementById('display-controls-hud');
-    this.hudTimer = null;
+    this.displaySelection = { mode: 'follow', pageIds: [] };
 
     console.log('[PC Display] 🚀 Starting Fullscreen PC Display App...');
 
@@ -56,9 +61,6 @@ class PCDisplayApp {
 
     // Tải dữ liệu canvas đã lưu từ phiên trước
     this.loadDisplayState();
-
-    // Khởi tạo thanh điều khiển nổi HUD cho màn chiếu
-    this.initDisplayHUD();
 
     // Xử lý sự kiện cửa sổ & phím tắt (F11)
     this.bindWindowEvents();
@@ -120,7 +122,27 @@ class PCDisplayApp {
       }
     }
 
-    if (this.displayMode === 'single') {
+    this.youtubeViews = [];
+    if (this.displaySelection?.mode === 'fixed') {
+      const limit = this.displayMode === 'single' ? 1 : this.displayMode === 'dual' ? 2 : this.displayMode === 'quad' ? 4 : Infinity;
+      let indices;
+      if (this.displayMode === 'quad') {
+        indices = [0, 1, 2, 3].map(slot => {
+          const id = this.displaySelection.pageIds[slot];
+          if (!id) return this.pages.length + slot;
+          const idx = this.pages.findIndex(p => p.id === id);
+          return idx >= 0 ? idx : (this.pages.length + slot);
+        });
+      } else {
+        indices = this.displaySelection.pageIds
+          .map(id => this.pages.findIndex(page => page.id === id))
+          .filter(index => index >= 0).slice(0, limit);
+      }
+      this.renderPageTiles(indices, this.displayMode === 'dual' || this.displayMode === 'quad' ? 2 : null);
+    } else if (this.displayMode === 'single') {
+      this.youtubeViews.push({ scene: this.scene, camera: this.camera, viewport: {
+        x: 0, y: 0, width: window.innerWidth, height: window.innerHeight,
+      } });
       this.renderer.render(
         this.scene,
         this.camera,
@@ -131,11 +153,27 @@ class PCDisplayApp {
         null,
         this.remoteActiveSessions
       );
+      // Hiển thị badge số trang tinh tế ở chế độ 1 Bảng khi có từ 2 trang trở lên
+      if (this.pages && this.pages.length > 1) {
+        const curName = this.pages[this.currentPageIndex]?.name || `Trang ${this.currentPageIndex + 1}`;
+        this.drawViewportBadge(
+          this.renderer.ctx,
+          20,
+          24,
+          `${curName} (${this.currentPageIndex + 1}/${this.pages.length})`,
+          true,
+          this.remoteActiveSessions && this.remoteActiveSessions.size > 0
+        );
+      }
     } else if (this.displayMode === 'dual') {
       this._renderDualMode();
+    } else if (this.displayMode === 'quad') {
+      this._renderQuadMode();
     } else if (this.displayMode === 'grid') {
       this._renderGridMode();
     }
+
+    this.updateYoutubeOverlays();
 
     // Tiếp tục nếu camera vẫn đang lerp
     if (this._isCameraLerping()) {
@@ -143,164 +181,222 @@ class PCDisplayApp {
     }
   }
 
-  _renderDualMode() {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    const halfW = Math.floor(w / 2);
-    const ctx = this.renderer.ctx;
-
-    // Slot 1 (Bên trái): Trang trước hoặc trang tham chiếu (Index - 1 nếu có, hoặc trang 0)
-    let leftIndex = this.currentPageIndex - 1;
-    if (leftIndex < 0) leftIndex = (this.pages.length > 1) ? 1 : 0;
-    const rightIndex = this.currentPageIndex;
-
-    const leftPage = this.pages[leftIndex];
-    const rightPage = this.pages[rightIndex];
-
-    const vpLeft = { x: 0, y: 0, width: halfW, height: h };
-    const vpRight = { x: halfW, y: 0, width: w - halfW, height: h };
-
-    // Render Bảng Trái
-    if (leftPage) {
-      const leftScene = this.getPageScene(leftPage);
-      const leftCam = new Camera(0, 0, 1.0, halfW, h);
-      this.fitSceneInViewport(leftScene, leftCam, halfW, h, 60);
-      this.renderer.render(
-        leftScene,
-        leftCam,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        { viewport: vpLeft, isDisplayMode: true }
-      );
-      this.drawViewportBadge(
-        ctx,
-        16,
-        20,
-        leftPage.name || `Trang ${leftIndex + 1}`,
-        false,
-        false
-      );
-    } else {
-      this.renderer.render(
-        this.scene,
-        this.camera,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        { viewport: vpLeft, isDisplayMode: true }
-      );
+  updateYoutubeOverlays() {
+    const host = document.getElementById('display-video-overlays');
+    if (!host) return;
+    const liveIds = new Set();
+    // Use the exact scenes, cameras and viewports drawn on the canvas, including
+    // inactive pages and fixed selections. Navigation must not hide their players.
+    for (const { scene, camera, viewport } of this.youtubeViews || []) {
+      const nodes = (scene.root.children || []).filter(node => node.youtubeData?.videoId);
+      const project = point => {
+        const local = camera.worldToScreen(point);
+        return new Vec2(local.x + viewport.x, local.y + viewport.y);
+      };
+      for (const node of nodes) {
+        const p0 = project(node.transform.transformPoint(new Vec2(0, 0)));
+        const p1 = project(node.transform.transformPoint(new Vec2(node.width, node.height)));
+        const left = Math.min(p0.x, p1.x), top = Math.min(p0.y, p1.y);
+        const width = Math.abs(p1.x - p0.x), height = Math.abs(p1.y - p0.y);
+        if (width < 12 || height < 12 || left >= viewport.x + viewport.width || top >= viewport.y + viewport.height || left + width <= viewport.x || top + height <= viewport.y) continue;
+        liveIds.add(node.id);
+        let iframe = host.querySelector(`[data-node-id="${node.id}"]`);
+        if (!iframe) {
+          iframe = document.createElement('iframe');
+          iframe.dataset.nodeId = node.id;
+          iframe.src = `https://www.youtube.com/embed/${node.youtubeData.videoId}?rel=0&enablejsapi=1&playsinline=1&origin=${encodeURIComponent(window.location.origin)}`;
+          iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+          iframe.allowFullscreen = true;
+          host.appendChild(iframe);
+        }
+        iframe.style.left = `${left}px`; iframe.style.top = `${top}px`;
+        iframe.style.width = `${width}px`; iframe.style.height = `${height}px`;
+        iframe.style.display = 'block';
+        iframe.style.clipPath = `inset(${Math.max(0, viewport.y - top)}px ${Math.max(0, left + width - viewport.x - viewport.width)}px ${Math.max(0, top + height - viewport.y - viewport.height)}px ${Math.max(0, viewport.x - left)}px)`;
+      }
     }
+    // Không hủy player khi đổi trang/chế độ: giữ iframe để video không bị reset.
+    // Chỉ xóa khi node YouTube thực sự không còn trong toàn bộ scene/pages.
+    const allYoutubeIds = new Set();
+    const collectYoutubeIds = (value) => {
+      if (!value) return;
+      const children = value.root?.children || value.children || [];
+      for (const child of children) {
+        if (child.youtubeData?.videoId) allYoutubeIds.add(child.id);
+        collectYoutubeIds(child);
+      }
+    };
+    collectYoutubeIds(this.scene);
+    for (const page of this.pages || []) collectYoutubeIds(page.scene);
+    host.querySelectorAll('iframe').forEach(frame => {
+      if (liveIds.has(frame.dataset.nodeId)) {
+        frame.style.visibility = 'visible';
+      } else if (allYoutubeIds.has(frame.dataset.nodeId)) {
+        frame.style.visibility = 'hidden';
+      } else {
+        frame.remove();
+      }
+    });
+  }
 
-    // Render Bảng Phải (Trang hiện tại đang viết)
-    const rightScene = rightPage ? this.getPageScene(rightPage) : this.scene;
-    this.renderer.render(
-      rightScene,
-      this.camera,
-      null,
-      null,
-      null,
-      null,
-      null,
-      this.remoteActiveSessions,
-      { viewport: vpRight, isDisplayMode: true }
-    );
-    this.drawViewportBadge(
-      ctx,
-      halfW + 16,
-      20,
-      rightPage?.name || `Trang ${rightIndex + 1}`,
-      true,
-      this.remoteActiveSessions && this.remoteActiveSessions.size > 0
-    );
+  controlYoutube(data) {
+    if (!data?.nodeId || !data.action) return;
+    const iframe = document.querySelector(`#display-video-overlays iframe[data-node-id="${data.nodeId}"]`);
+    if (!iframe || !iframe.contentWindow) return;
+    if (data.action === 'play' && !this.youtubeAudioUnlocked) {
+      // Cho video chạy ngay cả khi autoplay audio bị trình duyệt chặn.
+      // Âm thanh được điều khiển bằng nút Unmute trên app.
+      iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'mute', args: [] }), '*');
+      iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'playVideo', args: [] }), '*');
+      return;
+    }
+    const state = this.youtubePlayback.get(data.nodeId) || { time: 0, playing: false, startedAt: 0 };
+    const now = performance.now();
+    if (state.playing) state.time += (now - state.startedAt) / 1000;
+    state.startedAt = now;
+    let command = 'pauseVideo';
+    let args = [];
+    if (data.action === 'play') {
+      command = 'playVideo'; state.playing = true;
+    } else if (data.action === 'pause') {
+      command = 'pauseVideo'; state.playing = false;
+    } else if (data.action === 'stop') {
+      command = 'stopVideo'; state.playing = false; state.time = 0;
+    } else if (data.action === 'unmute') {
+      this.youtubeAudioUnlocked = true;
+      iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'unMute', args: [] }), '*');
+      iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'setVolume', args: [100] }), '*');
+      this.youtubePlayback.set(data.nodeId, state);
+      return;
+    } else if (data.action === 'restart') {
+      command = 'seekTo'; args = [0, true]; state.time = 0; state.playing = true;
+    } else if (data.action === 'backward' || data.action === 'forward') {
+      const delta = data.action === 'backward' ? -10 : 10;
+      state.time = Math.max(0, state.time + delta);
+      command = 'seekTo'; args = [state.time, true];
+    }
+    this.youtubePlayback.set(data.nodeId, state);
+    iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: command, args }), '*');
+  }
 
-    // Đường kẻ phân chia 2 bảng sắc nét hiện đại
-    ctx.save();
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([6, 6]);
-    ctx.beginPath();
-    ctx.moveTo(halfW, 0);
-    ctx.lineTo(halfW, h);
-    ctx.stroke();
-    ctx.restore();
+  _renderDualMode() {
+    const first = Math.max(0, this.currentPageIndex - 1);
+    this.renderPageTiles([first, first + 1], 2);
+  }
+
+  _renderQuadMode() {
+    const total = this.pages.length;
+    let indices;
+    if (total <= 4) {
+      // Phương án 1: Luôn giữ khung 4 ô cố định (2x2). Các trang chưa có sẽ thành ô chờ
+      indices = [0, 1, 2, 3];
+    } else {
+      const start = Math.max(0, Math.min(this.currentPageIndex - 1, total - 4));
+      indices = [start, start + 1, start + 2, start + 3];
+    }
+    this.renderPageTiles(indices, 2);
   }
 
   _renderGridMode() {
     const total = Math.max(1, this.pages.length);
+    this.renderPageTiles(Array.from({ length: total }, (_, i) => i));
+  }
+
+  renderPageTiles(indices, fixedColumns = null) {
+    this.youtubeViews = [];
     const w = window.innerWidth;
     const h = window.innerHeight;
     const ctx = this.renderer.ctx;
+    const dpr = window.devicePixelRatio || 1;
+    const gap = 4;
+    const margin = 3;
+    const header = 28;
+    const aspect = 16 / 9;
 
-    // Tính toán số cột và dòng tối ưu cho lưới NxM
-    let cols = 1, rows = 1;
-    if (total === 2) {
-      cols = 2; rows = 1;
-    } else if (total <= 4) {
-      cols = 2; rows = 2;
-    } else if (total <= 6) {
-      cols = 3; rows = 2;
-    } else {
-      cols = Math.ceil(Math.sqrt(total));
-      rows = Math.ceil(total / cols);
+    // Fill every row; aspect ratio only guides the number of columns.
+    const layoutFor = (cols) => {
+      const rows = Math.ceil(indices.length / cols);
+      const availableW = Math.max(1, (w - margin * 2 - gap * (cols - 1)) / cols);
+      const availableH = Math.max(1, (h - margin * 2 - gap * (rows - 1)) / rows - header);
+      return { cols, rows, width: availableW, height: availableH + header };
+    };
+    let layout = layoutFor(fixedColumns || 1);
+    if (!fixedColumns) {
+      for (let cols = 2; cols <= indices.length; cols++) {
+        const candidate = layoutFor(cols);
+        const score = item => Math.abs(Math.log((item.width / Math.max(1, item.height - header)) / aspect));
+        if (score(candidate) < score(layout)) layout = candidate;
+      }
     }
 
-    const cellW = Math.floor(w / cols);
-    const cellH = Math.floor(h / rows);
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#090d13';
+    ctx.fillRect(0, 0, w, h);
+    if (!indices.length) {
+      ctx.fillStyle = '#aab8c8';
+      ctx.font = '16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Chưa chọn trang để chiếu', w / 2, h / 2);
+    }
+    ctx.restore();
+    if (!indices.length) return;
 
-    for (let i = 0; i < total; i++) {
-      const c = i % cols;
-      const r = Math.floor(i / cols);
-      const vx = c * cellW;
-      const vy = r * cellH;
-      const vw = (c === cols - 1) ? (w - vx) : cellW;
-      const vh = (r === rows - 1) ? (h - vy) : cellH;
-
-      const page = this.pages[i];
-      const pageScene = page ? this.getPageScene(page) : this.scene;
-      const isActive = (i === this.currentPageIndex);
-
-      const cellCam = isActive ? this.camera : new Camera(0, 0, 1.0, vw, vh);
-      if (!isActive) {
-        this.fitSceneInViewport(pageScene, cellCam, vw, vh, 40);
+    const top = (h - (layout.height * layout.rows + gap * (layout.rows - 1))) / 2;
+    for (let slot = 0; slot < indices.length; slot++) {
+      const index = indices[slot];
+      const row = Math.floor(slot / layout.cols);
+      const col = slot % layout.cols;
+      const rowCount = Math.min(layout.cols, indices.length - row * layout.cols);
+      layout.width = (w - margin * 2 - gap * (rowCount - 1)) / rowCount;
+      const left = margin;
+      const x = left + col * (layout.width + gap);
+      const y = top + row * (layout.height + gap);
+      const page = this.pages[index];
+      const active = index === this.currentPageIndex;
+      const pageScene = active ? this.scene : (page ? this.getPageScene(page) : new SceneGraph());
+      const viewport = {
+        x: x + 2, y: y + header,
+        width: Math.max(1, layout.width - 4),
+        height: Math.max(1, layout.height - header - 2),
+      };
+      const camera = new Camera(0, 0, 1, viewport.width, viewport.height);
+      if (active) {
+        camera.pan = this.camera.pan.clone();
+        camera.zoom = this.camera.zoom * Math.min(viewport.width / w, viewport.height / h);
+      } else {
+        this.fitSceneInViewport(pageScene, camera, viewport.width, viewport.height, 24);
       }
 
-      const sessions = isActive ? this.remoteActiveSessions : null;
-
+      this.youtubeViews.push({ scene: pageScene, camera, viewport });
       this.renderer.render(
-        pageScene,
-        cellCam,
-        null,
-        null,
-        null,
-        null,
-        null,
-        sessions,
-        { viewport: { x: vx, y: vy, width: vw, height: vh }, isDisplayMode: true }
+        pageScene, camera, null, null, null, null, null,
+        active ? this.remoteActiveSessions : null,
+        { viewport, isDisplayMode: true }
       );
 
-      // Khung viền phân cách từng ô
       ctx.save();
-      ctx.strokeStyle = isActive ? 'rgba(88, 166, 255, 0.8)' : 'rgba(255, 255, 255, 0.12)';
-      ctx.lineWidth = isActive ? 3 : 1;
-      ctx.setLineDash(isActive ? [] : [4, 4]);
-      ctx.strokeRect(vx + 1, vy + 1, vw - 2, vh - 2);
-      ctx.restore();
-
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = active ? '#132c46' : '#18212d';
+      ctx.fillRect(x, y, layout.width, header);
+      ctx.strokeStyle = active ? '#58a6ff' : '#73859a';
+      ctx.lineWidth = active ? 3 : 2;
+      ctx.setLineDash([]);
+      ctx.strokeRect(x + 1.5, y + 1.5, layout.width - 3, layout.height - 3);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x + 2, y + header - 0.5);
+      ctx.lineTo(x + layout.width - 2, y + header - 0.5);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.rect(x + 4, y + 1, Math.max(1, layout.width - 8), header - 2);
+      ctx.clip();
       this.drawViewportBadge(
-        ctx,
-        vx + 12,
-        vy + 16,
-        page?.name || `Trang ${i + 1}`,
-        isActive,
-        isActive && sessions && sessions.size > 0
+        ctx, x + 6, y + 2,
+        (page ? (page.name || `Trang ${index + 1}`) : `Ô ${slot + 1}`) + (active ? ' · Đang viết' : (!page ? ' · Chờ' : '')),
+        active, active && this.remoteActiveSessions.size > 0
       );
+      ctx.restore();
     }
   }
 
@@ -379,6 +475,8 @@ class PCDisplayApp {
 
   drawViewportBadge(ctx, x, y, title, isActive, isWriting = false) {
     ctx.save();
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.font = '600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
     const textMetrics = ctx.measureText(title);
     const badgeW = textMetrics.width + (isWriting ? 34 : 20);
@@ -407,64 +505,47 @@ class PCDisplayApp {
     ctx.restore();
   }
 
-  initDisplayHUD() {
-    if (!this.hudElement) return;
-
-    const btnSingle = document.getElementById('hud-mode-single');
-    const btnDual = document.getElementById('hud-mode-dual');
-    const btnGrid = document.getElementById('hud-mode-grid');
-    const btnFs = document.getElementById('hud-btn-fullscreen');
-
-    if (btnSingle) {
-      btnSingle.addEventListener('click', () => this.setDisplayMode('single', true));
-    }
-    if (btnDual) {
-      btnDual.addEventListener('click', () => this.setDisplayMode('dual', true));
-    }
-    if (btnGrid) {
-      btnGrid.addEventListener('click', () => this.setDisplayMode('grid', true));
-    }
-    if (btnFs) {
-      btnFs.addEventListener('click', () => this.toggleFullscreen());
-    }
-
-    // Auto-hide HUD on inactivity
-    const showHUD = () => {
-      this.hudElement.style.opacity = '1';
-      this.hudElement.style.pointerEvents = 'auto';
-      document.body.classList.remove('hide-cursor');
-      if (this.hudTimer) clearTimeout(this.hudTimer);
-      this.hudTimer = setTimeout(() => {
-        this.hudElement.style.opacity = '0';
-        this.hudElement.style.pointerEvents = 'none';
-        document.body.classList.add('hide-cursor');
-      }, 3000);
-    };
-
-    window.addEventListener('mousemove', showHUD);
-    window.addEventListener('touchstart', showHUD);
-    showHUD();
+  showPageTransitionBanner(pageIndex = this.currentPageIndex, totalPages = this.pages.length, pageName = null) {
+    if (!this.toastElement || !this.toastText) return;
+    const currentNum = (typeof pageIndex === 'number' ? pageIndex : 0) + 1;
+    const total = Math.max(1, totalPages || 1);
+    const name = pageName || this.pages[pageIndex]?.name || `Trang ${currentNum}`;
+    this.toastText.textContent = `${name} (${currentNum} / ${total})`;
+    this.toastElement.style.opacity = '1';
+    this.toastElement.style.transform = 'translateX(-50%) translateY(0)';
+    if (this._toastTimer) clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => {
+      if (this.toastElement) {
+        this.toastElement.style.opacity = '0';
+        this.toastElement.style.transform = 'translateX(-50%) translateY(-20px)';
+      }
+    }, 2200);
   }
 
-  setDisplayMode(mode, broadcast = false) {
-    if (!['single', 'dual', 'grid'].includes(mode)) return;
+  updatePageUI() {
+    if (this.pillPage) {
+      const cur = (this.currentPageIndex || 0) + 1;
+      const total = Math.max(1, this.pages?.length || 1);
+      const modeLabels = { single: '1 Bảng', dual: 'Ghép Đôi', quad: 'Chia 4', grid: 'Lưới' };
+      const modeStr = modeLabels[this.displayMode] || this.displayMode;
+      this.pillPage.textContent = `Trang ${cur} / ${total} [${modeStr}]`;
+    }
+  }
+
+  setDisplayMode(mode) {
+    if (!['single', 'dual', 'quad', 'grid'].includes(mode)) return;
     this.displayMode = mode;
-
-    // Cập nhật trạng thái active trên HUD buttons
-    const btnSingle = document.getElementById('hud-mode-single');
-    const btnDual = document.getElementById('hud-mode-dual');
-    const btnGrid = document.getElementById('hud-mode-grid');
-    if (btnSingle) btnSingle.classList.toggle('active', mode === 'single');
-    if (btnDual) btnDual.classList.toggle('active', mode === 'dual');
-    if (btnGrid) btnGrid.classList.toggle('active', mode === 'grid');
-
     console.log(`[PC Display] 🖥️ Display mode switched to: ${mode}`);
+    this.updatePageUI();
     this.saveDisplayState();
     this.requestRender();
+  }
 
-    if (broadcast && this.syncClient && this.syncClient.isConnected) {
-      this.syncClient.send('DISPLAY_MODE_SET', { mode });
-    }
+  applyDisplaySelection(selection) {
+    if (!selection || !['follow', 'fixed'].includes(selection.mode) || !Array.isArray(selection.pageIds)) return;
+    this.displaySelection = { mode: selection.mode, pageIds: [...new Set(selection.pageIds)] };
+    this.requestRender();
+    this.saveDisplayState();
   }
 
   dismissStandbyBanner() {
@@ -492,6 +573,7 @@ class PCDisplayApp {
           pages: this.pages,
           currentPageIndex: this.currentPageIndex,
           displayMode: this.displayMode,
+          displaySelection: this.displaySelection,
           savedAt: Date.now(),
         };
         localStorage.setItem('nestedcanvas_display_mirror_state', JSON.stringify(data));
@@ -521,6 +603,7 @@ class PCDisplayApp {
         return false;
       }
       const data = JSON.parse(raw);
+      this.applyDisplaySelection(data.displaySelection);
       if (Array.isArray(data.pages)) {
         this.pages = data.pages;
       }
@@ -531,7 +614,8 @@ class PCDisplayApp {
         this.setDisplayMode(data.displayMode, false);
       }
       if (data.scene) {
-        this.scene.loadFromJSON(data.scene);
+        const sceneData = this.resolveCurrentPageScene(data.scene);
+        this.scene.loadFromJSON(sceneData);
         if (data.theme) this.scene.root.style = data.theme;
         if (data.gridType) this.scene.root.gridType = data.gridType;
         this.hasSceneData = this.hasMeaningfulContent();
@@ -563,6 +647,13 @@ class PCDisplayApp {
     return hasChildren || hasElements || hasChildElements || hasImages || hasLiveSession;
   }
 
+  // Only fall back to page data when the packet omits its scene.
+  resolveCurrentPageScene(sceneData) {
+    const page = this.pages?.[this.currentPageIndex];
+    // An explicitly empty scene is a valid blank page, never stale data.
+    return sceneData ?? page?.scene ?? new SceneGraph().toJSON();
+  }
+
   hideIdleOverlay() {
     if (this.idleOverlay) {
       this.idleOverlay.classList.add('hidden');
@@ -585,7 +676,9 @@ class PCDisplayApp {
 
   updateOverlayVisibility() {
     if (!this.idleOverlay) return;
-    if (this.hasSceneData || this.hasMeaningfulContent() || (this.syncClient && this.syncClient.presenceCount > 1)) {
+    const isConnected = this.syncClient && this.syncClient.isConnected;
+    const hasPages = Array.isArray(this.pages) && this.pages.length > 0;
+    if (this.hasSceneData || this.hasMeaningfulContent() || isConnected || hasPages) {
       this.hideIdleOverlay();
     } else {
       this.showIdleOverlay();
@@ -625,6 +718,7 @@ class PCDisplayApp {
         this.pillText.textContent = `Mất kết nối LAN (${serverHost})`;
       }
     }
+    this.updatePageUI();
   }
 
   getSceneBounds() {
@@ -729,6 +823,8 @@ class PCDisplayApp {
 
     // Nhận thông tin ban đầu khi kết nối
     this.syncClient.on('WELCOME', (data) => {
+      this.applyDisplaySelection(data.displaySelection);
+      this._currentSessionId = data.active_session_id;
       this.updateConnectionUI(true, data.local_ip);
 
       // Phát hiện server restart qua generation ID
@@ -799,6 +895,10 @@ class PCDisplayApp {
 
     // Nhận toàn cảnh Canvas (Full Scene & Camera & Theme & Pages & DisplayMode)
     this.syncClient.on('CANVAS_MIRROR', (data) => {
+      this.applyDisplaySelection(data?.displaySelection);
+      if (data && ['single', 'dual', 'quad', 'grid'].includes(data.displayMode)) {
+        this.setDisplayMode(data.displayMode);
+      }
       if (data && data.scene) {
         console.log('[PC Display] 📥 Received CANVAS_MIRROR update');
         this.applyCanvasMirror(
@@ -808,26 +908,40 @@ class PCDisplayApp {
           data.pages,
           data.currentPageIndex
         );
-        if (data.displayMode) {
-          this.setDisplayMode(data.displayMode, false);
-        }
       }
+    });
+
+    // YouTube chỉ chạy tại Display; thiết bị điều khiển gửi lệnh từ xa.
+    this.syncClient.on('YOUTUBE_CONTROL', (data) => {
+      this.controlYoutube(data);
+      setTimeout(() => this.controlYoutube(data), 350);
+      setTimeout(() => this.controlYoutube(data), 1200);
+      setTimeout(() => this.controlYoutube(data), 2500);
     });
 
     // Fast-path Page Switch Protocol (Instant Relay <15ms)
     this.syncClient.on('PAGE_SWITCH', (data) => {
       if (!data) return;
+      this.remoteActiveSessions.clear();
+      this.targetPan = null;
+      this.targetZoom = null;
       console.log(`[PC Display] ⚡ Instant PAGE_SWITCH to page index ${data.currentPageIndex}`);
       if (Array.isArray(data.pages)) {
         this.pages = data.pages;
+        // Xóa cache scene instance để luôn render bản mới nhất
+        for (const p of this.pages) {
+          delete p._sceneInstance;
+          delete p._lastSceneJSON;
+        }
       }
       if (typeof data.currentPageIndex === 'number') {
         this.currentPageIndex = data.currentPageIndex;
       }
-      if (data.scene) {
-        this.scene.loadFromJSON(data.scene);
-        const theme = data.theme || data.scene.root?.style || 'chalkboard';
-        const grid = data.gridType || data.scene.root?.gridType || 'grid';
+      {
+        const sceneData = this.resolveCurrentPageScene(data.scene);
+        this.scene.loadFromJSON(sceneData);
+        const theme = data.theme || sceneData.root?.style || 'chalkboard';
+        const grid = data.gridType || sceneData.root?.gridType || 'grid';
         this.scene.root.style = theme;
         this.scene.root.gridType = grid;
       }
@@ -846,15 +960,47 @@ class PCDisplayApp {
       }
       this.hasSceneData = true;
       this.hideIdleOverlay();
+      this.showPageTransitionBanner();
+      this.updatePageUI();
       this.saveDisplayState();
       this.requestRender();
     });
 
     // Display Layout / Multi-Board Mode Selection Protocol
     this.syncClient.on('DISPLAY_MODE_SET', (data) => {
-      if (data && data.mode) {
-        this.setDisplayMode(data.mode, false);
+      if (!data) return;
+      this.applyDisplaySelection(data.displaySelection);
+      this.remoteActiveSessions.clear();
+      this.targetPan = null;
+      this.targetZoom = null;
+      if (Array.isArray(data.pages)) {
+        this.pages = data.pages;
+        for (const p of this.pages) {
+          delete p._sceneInstance;
+          delete p._lastSceneJSON;
+        }
       }
+      if (typeof data.currentPageIndex === 'number') {
+        this.currentPageIndex = data.currentPageIndex;
+      }
+      if (data.scene) {
+        this.scene.loadFromJSON(this.resolveCurrentPageScene(data.scene));
+        const theme = data.theme || data.scene.root?.style || 'chalkboard';
+        const grid = data.gridType || data.scene.root?.gridType || 'grid';
+        this.scene.root.style = theme;
+        this.scene.root.gridType = grid;
+      }
+      if (data.camera) {
+        if (typeof data.camera.zoom === 'number') this.camera.zoom = data.camera.zoom;
+        if (data.camera.pan) this.camera.pan = new Vec2(data.camera.pan.x, data.camera.pan.y);
+      }
+      if (data.mode) {
+        this.setDisplayMode(data.mode);
+      }
+      this.hasSceneData = true;
+      this.hideIdleOverlay();
+      this.updatePageUI();
+      this.requestRender();
     });
 
     // Nhận cập nhật phiên làm việc từ xa (Chỉ áp dụng khi khởi tạo hoặc chuyển phiên thực sự)
@@ -864,7 +1010,8 @@ class PCDisplayApp {
         if (!this.hasSceneData || isNewSession) {
           console.log('[PC Display] 📥 Applying SESSION_UPDATE (initial / session switch)');
           this._currentSessionId = data.sessionId;
-          this.applyCanvasMirror(data.content.scene, data.content.camera);
+          this.applyCanvasMirror(data.content.scene, data.content.camera, null,
+            data.content.pages || [], data.content.currentPageIndex ?? 0);
         }
       }
     });
@@ -984,6 +1131,7 @@ class PCDisplayApp {
       existing.images = node.images;
       existing.textContent = node.textContent;
       existing.graphData = node.graphData;
+      existing.youtubeData = node.youtubeData;
     } else {
       this.scene.root.children.push(node);
     }
@@ -996,15 +1144,23 @@ class PCDisplayApp {
 
   applyCanvasMirror(sceneData, cameraData, themeData = null, pagesData = null, pageIndex = null) {
     if (!sceneData) return;
-    this.scene.loadFromJSON(sceneData);
-
-    // Cập nhật danh sách trang nếu có
+    this.remoteActiveSessions.clear();
+    this.targetPan = null;
+    this.targetZoom = null;
+    const prevIndex = this.currentPageIndex;
+    // Cập nhật danh sách trang nếu có và xóa cache instance
     if (Array.isArray(pagesData)) {
       this.pages = pagesData;
+      for (const p of this.pages) {
+        delete p._sceneInstance;
+        delete p._lastSceneJSON;
+      }
     }
     if (typeof pageIndex === 'number') {
       this.currentPageIndex = pageIndex;
     }
+
+    this.scene.loadFromJSON(this.resolveCurrentPageScene(sceneData));
 
     // Đồng bộ triệt để theme & grid từ dữ liệu nhận được
     const theme = (themeData && themeData.theme) || (themeData && themeData.style) || (sceneData.root && sceneData.root.style) || 'chalkboard';
@@ -1028,6 +1184,10 @@ class PCDisplayApp {
     }
 
     this.hideIdleOverlay();
+    if (typeof pageIndex === 'number' && pageIndex !== prevIndex) {
+      this.showPageTransitionBanner();
+    }
+    this.updatePageUI();
     this.saveDisplayState();
     this.requestRender();
   }
@@ -1046,8 +1206,9 @@ class PCDisplayApp {
   }
 
   applyStrokeLive(data) {
-    const { clientId, session } = data;
+    const { clientId, session, pageIndex } = data;
     if (!clientId) return;
+    if (typeof pageIndex === 'number' && pageIndex !== this.currentPageIndex) return;
     if (!session || !session.points || session.points.length === 0) {
       this.remoteActiveSessions.delete(clientId);
     } else {
@@ -1077,7 +1238,7 @@ class PCDisplayApp {
 
     // Định tuyến nét vẽ theo pageIndex nếu có và đang ở trang khác
     let targetScene = this.scene;
-    if (typeof pageIndex === 'number' && this.pages[pageIndex]) {
+    if (typeof pageIndex === 'number' && pageIndex !== this.currentPageIndex && this.pages[pageIndex]) {
       targetScene = this.getPageScene(this.pages[pageIndex]);
       // Cập nhật luôn json của page đó
       const pageNode = (nodeId ? targetScene.getNode(nodeId) : null) || targetScene.root;
@@ -1092,21 +1253,30 @@ class PCDisplayApp {
       }
     }
 
-    const targetNode = (nodeId ? this.scene.getNode(nodeId) : null) || this.scene.root;
-    if (targetNode) {
-      const strokeObj = Stroke.fromJSON(stroke);
-      if (!Array.isArray(targetNode.elements)) targetNode.elements = [];
-      if (!targetNode.elements.some((s) => s.id === strokeObj.id)) {
-        targetNode.elements.push(strokeObj);
+    // Chỉ vẽ lên this.scene nếu nét vẽ thuộc đúng trang hiện tại (hoặc không truyền pageIndex)
+    const isCurrentPage = (typeof pageIndex !== 'number') || (pageIndex === this.currentPageIndex);
+    if (isCurrentPage) {
+      const targetNode = (nodeId ? this.scene.getNode(nodeId) : null) || this.scene.root;
+      if (targetNode) {
+        const strokeObj = Stroke.fromJSON(stroke);
+        if (!Array.isArray(targetNode.elements)) targetNode.elements = [];
+        if (!targetNode.elements.some((s) => s.id === strokeObj.id)) {
+          targetNode.elements.push(strokeObj);
+        }
+        if (this.pages && this.pages[this.currentPageIndex]) {
+          this.pages[this.currentPageIndex].scene = this.scene.toJSON();
+          delete this.pages[this.currentPageIndex]._sceneInstance;
+          delete this.pages[this.currentPageIndex]._lastSceneJSON;
+        }
+        this.hasSceneData = true;
+        this.hideIdleOverlay();
+        const delay = sendTime ? ` [Độ trễ toàn trình: ${Date.now() - sendTime}ms]` : '';
+        console.log(`[PC Display] ✏️ Rendered stroke in "${targetNode.name || targetNode.id}" (${strokeObj.points?.length || 0} pts, tổng: ${targetNode.elements.length})${delay}`);
+      } else {
+        console.warn(`[PC Display] ⚠️ Target node "${nodeId}" not found for stroke!`);
       }
-      this.hasSceneData = true;
-      this.hideIdleOverlay();
-      const delay = sendTime ? ` [Độ trễ toàn trình: ${Date.now() - sendTime}ms]` : '';
-      console.log(`[PC Display] ✏️ Rendered stroke in "${targetNode.name || targetNode.id}" (${strokeObj.points?.length || 0} pts, tổng: ${targetNode.elements.length})${delay}`);
-    } else {
-      console.warn(`[PC Display] ⚠️ Target node "${nodeId}" not found for stroke!`);
     }
-    if (clientId) {
+    if (clientId && isCurrentPage) {
       this.remoteActiveSessions.delete(clientId);
     }
     this.saveDisplayState();
@@ -1169,10 +1339,16 @@ class PCDisplayApp {
   }
 
   bindWindowEvents() {
+    // Một thao tác trực tiếp trên Display là điều kiện cần để trình duyệt cho phép âm thanh.
+    window.addEventListener('pointerdown', () => {
+      this.unlockYoutubeAudioForAll();
+    }, { passive: true });
+
     window.addEventListener('resize', () => {
       this.renderer.resize(window.innerWidth, window.innerHeight);
       this.camera.viewportWidth = window.innerWidth;
       this.camera.viewportHeight = window.innerHeight;
+      this.requestRender();
     });
 
     window.addEventListener('beforeunload', () => this.saveDisplayState());
@@ -1180,13 +1356,15 @@ class PCDisplayApp {
 
     // Phím tắt toàn màn hình & chuyển chế độ hiển thị
     window.addEventListener('keydown', (e) => {
-      // Phím số 1, 2, 3 để đổi chế độ hiển thị bảng
+      // Phím số 1, 2, 4 để đổi chế độ hiển thị bảng (hoặc 3/G cho Lưới)
       if (e.key === '1') {
-        this.setDisplayMode('single', true);
+        this.setDisplayMode('single');
       } else if (e.key === '2') {
-        this.setDisplayMode('dual', true);
-      } else if (e.key === '3') {
-        this.setDisplayMode('grid', true);
+        this.setDisplayMode('dual');
+      } else if (e.key === '4') {
+        this.setDisplayMode('quad');
+      } else if (e.key === '3' || e.key === 'g' || e.key === 'G') {
+        this.setDisplayMode('grid');
       } else if (e.key === 'F11') {
         e.preventDefault();
         this.toggleFullscreen();
@@ -1199,6 +1377,17 @@ class PCDisplayApp {
           this.syncClient.send('CANVAS_CLEAR', {});
         }
       }
+    });
+  }
+
+  unlockYoutubeAudioForAll() {
+    const frames = document.querySelectorAll('#display-video-overlays iframe');
+    if (!frames.length) return;
+    this.youtubeAudioUnlocked = true;
+    frames.forEach((iframe) => {
+      if (!iframe.contentWindow) return;
+      iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'unMute', args: [] }), '*');
+      iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'setVolume', args: [100] }), '*');
     });
   }
 

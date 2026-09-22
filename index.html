@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 
-<head>
+  <head>
+    <script src="/boot-status.js"></script>
   <meta charset="UTF-8" />
   <meta name="viewport"
     content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
@@ -14,6 +15,7 @@
   <link rel="stylesheet"
     href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" />
   <link rel="stylesheet" href="/src/style.css" />
+  <link rel="stylesheet" href="/src/workspace-ui.css" />
   <!-- KaTeX for Beautiful High-Precision Mathematical Typography -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css" />
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
@@ -26,6 +28,7 @@
     <!-- Fullscreen Canvas Container -->
     <div class="canvas-container" id="canvas-container">
       <canvas id="canvas"></canvas>
+      <div id="video-overlays"></div>
     </div>
 
     <!-- Top Bar: Brand, Undo/Redo, Telemetry & Export -->
@@ -95,6 +98,9 @@
         Đồ Thị
       </button>
 
+      <button id="btn-add-youtube" class="btn-action" style="color:#ff4d67; border-color:rgba(255,77,103,0.45);"
+        title="Nhúng video YouTube vào bảng" aria-label="Thêm video YouTube"><span style="font-size:14px;">▶</span></button>
+
       <button id="btn-insert-image" class="btn-action" title="Chèn ảnh vào bảng hoặc canvas (hoặc dán Ctrl+V)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="3" y="3" width="18" height="18" rx="2" />
@@ -114,21 +120,9 @@
       </button>
       <input type="file" id="image-file-input" accept="image/*" style="display:none" />
 
-      <!-- Nút Đồng Bộ Mạng LAN & Kết Nối iPad / Tablet -->
-      <button id="btn-lan-sync" class="btn-action"
-        style="color:#3fb950; border-color:rgba(63,185,80,0.4); display:flex; align-items:center; gap:6px;"
-        title="Kết nối máy tính bảng / iPad qua mạng Wi-Fi cùng phòng">
+      <button id="btn-connection-status" class="connection-status" title="Chưa kết nối Display — mở cài đặt màn chiếu" aria-label="Chưa kết nối Display — mở cài đặt màn chiếu">
         <span id="dot-lan-status"
-          style="width:7px; height:7px; border-radius:50%; background:#3fb950; box-shadow:0 0 6px #3fb950;"></span>
-        <span id="label-lan-presence" style="font-weight:600;">1 Thiết Bị</span>
-      </button>
-
-      <!-- Nút Chiếu Lên Màn Hình PC Toàn Màn Hình -->
-      <button id="btn-cast-pc" class="btn-action"
-        style="color:#58a6ff; border-color:rgba(88,166,255,0.4); display:flex; align-items:center; gap:6px;"
-        title="Chiếu bảng lên Màn hình PC toàn màn hình">
-        <span id="dot-cast-status" style="width:7px; height:7px; border-radius:50%; background:#8b949e;"></span>
-        <span id="label-cast-pc" style="font-weight:600;">📺 Chiếu PC</span>
+          aria-hidden="true" style="width:7px; height:7px; border-radius:50%; background:#8b949e;"></span>
       </button>
 
       <div class="divider"></div>
@@ -250,6 +244,8 @@
     <!-- Bottom Floating Color & Brush Bar -->
     <div class="glass-panel bottom-bar" id="bottom-bar">
       <!-- Brush Type Selector -->
+      <details class="brush-picker" id="brush-picker">
+      <summary title="Chọn loại bút"><span id="brush-picker-label">Bút Mực</span><span aria-hidden="true">⌃</span></summary>
       <div class="brush-types">
         <button class="brush-tab active" data-brush="solid" title="Bút Mực Trơn">Bút Mực</button>
         <button class="brush-tab" data-brush="calligraphy" title="Bút Thư Pháp Vát Nghiêng">Thư Pháp</button>
@@ -259,6 +255,7 @@
         <button class="brush-tab" data-brush="dotted" title="Nét Chấm Bi">Chấm Bi</button>
         <button class="brush-tab" data-brush="highlighter" title="Bút Đánh Dấu">Đánh Dấu</button>
       </div>
+      </details>
 
       <div class="divider"></div>
 
@@ -344,13 +341,85 @@
     <!-- Bottom-Right HUD: Page Navigation & Zoom HUD -->
     <div class="bottom-right-hud">
       <!-- Thanh Điều Hướng Trang / Bảng Phụ (Page Navigation Bar) -->
-      <div class="glass-panel page-controls" id="page-controls" style="display:flex; align-items:center; gap:4px; padding:4px 8px; border-radius:10px;">
-        <button id="btn-page-prev" class="zoom-btn" title="Trang trước (PageUp / [)" style="font-size:11px;">◀</button>
-        <span id="page-indicator" class="zoom-val" style="min-width:76px; font-weight:600; font-size:12px; color:#58a6ff; cursor:pointer;" title="Bấm để xem danh sách trang hoặc đổi chế độ chiếu">Trang 1 / 1</span>
-        <button id="btn-page-next" class="zoom-btn" title="Trang sau (PageDown / ])" style="font-size:11px;">▶</button>
-        <div class="divider" style="height:14px; margin:0 2px;"></div>
-        <button id="btn-page-add" class="zoom-btn" title="Thêm bảng / trang mới (+)" style="font-size:17px; color:#3fb950; font-weight:bold;">+</button>
-        <button id="btn-page-disp-mode" class="zoom-btn" title="Chế độ chiếu Display: 1 Bảng / 2 Bảng Ghép Đôi / Lưới (Bấm để chuyển)" style="font-size:12px;">🖥️</button>
+      <div class="glass-panel page-controls" id="page-controls" role="group" aria-label="Điều hướng trang">
+        <button id="btn-page-prev" class="page-arrow" title="Trang trước (PageUp / [)" aria-label="Trang trước"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button>
+        <button id="page-indicator" class="page-current" title="Mở danh sách trang" aria-expanded="false" aria-controls="popover-page-menu">
+          <span class="page-current-copy"><span id="page-current-name">Trang 1</span><span id="page-current-count">1 / 1 trang</span></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 14 4-4 4 4"/></svg>
+        </button>
+        <button id="btn-page-next" class="page-arrow" title="Trang sau (PageDown / ])" aria-label="Trang sau"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg></button>
+        <span class="page-separator" aria-hidden="true"></span>
+        <button id="btn-page-add" class="page-add" title="Thêm trang mới (+)" aria-label="Thêm trang mới"><span aria-hidden="true">+</span></button>
+      </div>
+
+      <!-- Popover Cài Đặt Màn Chiếu Display Trên App -->
+      <div id="popover-disp-settings" class="glass-panel" style="display:none; position:absolute; bottom:calc(100% + 8px); right:0; width:264px; z-index:9999; padding:12px; border-radius:12px; box-shadow:0 12px 32px rgba(0,0,0,0.65); border:1px solid rgba(88,166,255,0.3); backdrop-filter:blur(16px); background:rgba(15, 23, 42, 0.96); flex-direction:column; gap:8px;">
+        <div style="font-size:11.5px; font-weight:700; color:#f0f6fc; display:flex; justify-content:space-between; align-items:center;">
+          <span>🖥️ CÀI ĐẶT MÀN CHIẾU PC</span>
+          <button id="btn-close-disp-settings" class="btn-icon-sm" style="font-size:11px;">✕</button>
+        </div>
+        <div class="display-menu-actions">
+          <button id="btn-lan-sync" class="btn-action" title="Quản lý thiết bị và kết nối Display">
+            <span class="display-action-copy"><span>Thiết bị & kết nối</span><span id="label-lan-presence">Chưa kết nối</span></span><span aria-hidden="true">›</span>
+          </button>
+          <button id="btn-cast-pc" class="btn-action" title="Chọn chiếu toàn bộ canvas hoặc riêng một bảng">
+            <span id="dot-cast-status" aria-hidden="true" style="width:7px; height:7px; flex-shrink:0; border-radius:50%; background:#8b949e;"></span>
+            <span class="display-action-copy"><span>Nội dung chiếu</span><span id="label-cast-pc">📺 Chiếu PC</span></span><span aria-hidden="true">›</span>
+          </button>
+        </div>
+        <label for="display-selection-mode" style="font-size:12px; font-weight:600;">Trang được chiếu</label>
+        <select id="display-selection-mode" class="display-selection-select">
+          <option value="follow">Theo trang đang viết</option>
+          <option value="fixed">Chọn các trang cố định</option>
+        </select>
+        <div id="display-page-picker" hidden></div>
+        <p style="font-size:10.5px; color:#8b949e; margin:0; line-height:1.4;">Bố cục màn chiếu:</p>
+        
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          <button id="btn-set-mode-single" class="disp-mode-option active" style="display:flex; align-items:flex-start; gap:8px; padding:8px 10px; border-radius:8px; background:rgba(88,166,255,0.12); border:1px solid rgba(88,166,255,0.35); cursor:pointer; text-align:left; color:#f0f6fc;">
+            <span style="font-size:16px;">🖥️</span>
+            <div style="flex:1;">
+              <div style="font-size:11.5px; font-weight:600; display:flex; justify-content:space-between;">
+                <span>1 Bảng Toàn Màn Hình</span>
+                <span id="check-mode-single" style="color:#3fb950; font-weight:bold;">✓</span>
+              </div>
+              <div style="font-size:10px; color:#8b949e; margin-top:2px;">Một trang chiếm toàn bộ màn hình.</div>
+            </div>
+          </button>
+
+          <button id="btn-set-mode-dual" class="disp-mode-option" style="display:flex; align-items:flex-start; gap:8px; padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1); cursor:pointer; text-align:left; color:#f0f6fc;">
+            <span style="font-size:16px;">👥</span>
+            <div style="flex:1;">
+              <div style="font-size:11.5px; font-weight:600; display:flex; justify-content:space-between;">
+                <span>2 Bảng Song Song (Ghép Đôi)</span>
+                <span id="check-mode-dual" style="color:#3fb950; font-weight:bold; display:none;">✓</span>
+              </div>
+              <div style="font-size:10px; color:#8b949e; margin-top:2px;">Chọn riêng trang bên trái và bên phải để chiếu cố định.</div>
+            </div>
+          </button>
+
+          <button id="btn-set-mode-quad" class="disp-mode-option" style="display:flex; align-items:flex-start; gap:8px; padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1); cursor:pointer; text-align:left; color:#f0f6fc;">
+            <span style="font-size:16px;">⊞</span>
+            <div style="flex:1;">
+              <div style="font-size:11.5px; font-weight:600; display:flex; justify-content:space-between;">
+                <span>Chia 4 Bảng (2x2)</span>
+                <span id="check-mode-quad" style="color:#3fb950; font-weight:bold; display:none;">✓</span>
+              </div>
+              <div style="font-size:10px; color:#8b949e; margin-top:2px;">Chia 4 ô đều nhau (2 hàng × 2 cột), cố định khung hình.</div>
+            </div>
+          </button>
+
+          <button id="btn-set-mode-grid" class="disp-mode-option" style="display:flex; align-items:flex-start; gap:8px; padding:8px 10px; border-radius:8px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1); cursor:pointer; text-align:left; color:#f0f6fc;">
+            <span style="font-size:16px;">▦</span>
+            <div style="flex:1;">
+              <div style="font-size:11.5px; font-weight:600; display:flex; justify-content:space-between;">
+                <span>Lưới Các Trang</span>
+                <span id="check-mode-grid" style="color:#3fb950; font-weight:bold; display:none;">✓</span>
+              </div>
+              <div style="font-size:10px; color:#8b949e; margin-top:2px;">Các ô giãn kín màn hình, ngăn bằng viền mảnh.</div>
+            </div>
+          </button>
+        </div>
       </div>
 
       <!-- Popover Menu Trang (Hiện khi bấm vào nhãn trang) -->
@@ -374,12 +443,15 @@
           <div style="display: flex; gap: 4px;">
             <button id="btn-disp-mode-single" class="btn-action active" style="flex:1; padding:4px 2px; font-size:10px; justify-content:center;" title="Chiếu 1 bảng toàn màn hình">1 Bảng</button>
             <button id="btn-disp-mode-dual" class="btn-action" style="flex:1; padding:4px 2px; font-size:10px; justify-content:center;" title="Chiếu 2 bảng song song (Ghép đôi)">Ghép Đôi</button>
+            <button id="btn-disp-mode-quad" class="btn-action" style="flex:1; padding:4px 2px; font-size:10px; justify-content:center;" title="Chiếu 4 bảng chia 4 ô (2x2)">Chia 4</button>
             <button id="btn-disp-mode-grid" class="btn-action" style="flex:1; padding:4px 2px; font-size:10px; justify-content:center;" title="Chiếu tất cả bảng dạng lưới">Lưới</button>
           </div>
         </div>
       </div>
 
       <div class="glass-panel zoom-controls">
+        <button id="btn-page-disp-mode" class="zoom-btn page-display-button" title="Cài đặt màn chiếu"><span aria-hidden="true">▣</span><span>Màn chiếu</span><span id="label-disp-mode-btn">1 Bảng</span></button>
+        <span class="divider" aria-hidden="true"></span>
         <button id="btn-zoom-out" class="zoom-btn" title="Zoom Out (-)">−</button>
         <span id="zoom-value" class="zoom-val" title="Reset Zoom (0)">100%</span>
         <button id="btn-zoom-in" class="zoom-btn" title="Zoom In (+)">+</button>
@@ -837,9 +909,8 @@
           <div style="display: flex; align-items: center; gap: 10px;">
             <span style="font-size: 24px;">📁</span>
             <div>
-              <span style="font-weight: 700; font-size: 16px; color: #58a6ff;">Quản Lý Phiên Làm Việc & Bài Giảng</span>
-              <div style="font-size: 11.5px; color: var(--text-muted);">Lưu trữ bền vững IndexedDB • Tự động chụp ảnh
-                xem trước • Đến tiết mở dùng ngay</div>
+              <span style="font-weight: 700; font-size: 16px; color: #58a6ff;">Chọn bảng làm việc</span>
+              <div style="font-size: 11.5px; color: var(--text-muted);">Mở một bảng đã lưu hoặc tạo bảng mới để bắt đầu.</div>
             </div>
           </div>
           <button id="btn-close-sessions-modal" class="btn-icon-sm" style="font-size: 16px; cursor: pointer;">✕</button>
@@ -854,7 +925,7 @@
 
           <button id="btn-create-session-modal" class="btn-action primary"
             style="padding: 8px 14px; font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <span>➕</span> Tạo Phiên Mới
+            <span>➕</span> Tạo bảng mới
           </button>
 
           <button id="btn-import-session-modal" class="btn-action"

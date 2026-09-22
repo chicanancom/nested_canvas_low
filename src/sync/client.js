@@ -78,7 +78,7 @@ export class SyncClient {
     const isCapacitor = !!(window.Capacitor?.isNativePlatform() || window.location.protocol === 'capacitor:' || (window.location.hostname === 'localhost' && (!window.location.port || window.location.port === '')));
     if (isCapacitor) {
       // Mặc định trỏ về IP của máy tính đang chạy backend
-      return '192.168.1.25';
+      return '192.168.1.121';
     }
 
     return window.location.hostname || 'localhost';
