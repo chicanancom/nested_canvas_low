@@ -47,6 +47,40 @@ test('render failure preserves the current page and allows retry', async () => {
   assert.equal(node.pdfLoading, false);
   assert.equal(saves(), 0);
 });
+test('PDF remembers each page size after navigation and save', async () => {
+  const previousImage = globalThis.Image;
+  const previousElement = globalThis.HTMLImageElement;
+  globalThis.Image = globalThis.HTMLImageElement = TestImage;
+  try {
+    const node = new CanvasNode('PDF', 800, 1100);
+    node.pdfData = { name: 'PDF', source: 'bytes', pageIndex: 0, pageCount: 2 };
+    const app = {
+      scene: { getNode: id => id === node.id ? node : null },
+      scheduleContentSave() {}, updateUI() {}, requestRender() {}, broadcastCanvasMirror() {},
+    };
+    const render = async (_source, index) => index === 0
+      ? { src: 'page-1', width: 1000, height: 1400 }
+      : { src: 'page-2', width: 1000, height: 1500 };
+
+    await changePdfPage(app, node.id, 1, render);
+    assert.deepEqual(node.pdfData.pageSizes[0], { width: 800, height: 1100 });
+    assert.equal(node.height, 1200);
+    node.width = 700;
+    node.height = 980;
+    await changePdfPage(app, node.id, 0, render);
+    assert.deepEqual([node.width, node.height], [800, 1100]);
+    await changePdfPage(app, node.id, 1, render);
+    assert.deepEqual([node.width, node.height], [700, 980]);
+
+    const restored = CanvasNode.fromJSON(JSON.parse(JSON.stringify(node.toJSON())));
+    const restoredApp = { ...app, scene: { getNode: id => id === restored.id ? restored : null } };
+    await changePdfPage(restoredApp, restored.id, 0, render);
+    assert.deepEqual([restored.width, restored.height], [800, 1100]);
+  } finally {
+    globalThis.Image = previousImage;
+    globalThis.HTMLImageElement = previousElement;
+  }
+});
 test('saved PDF source and current page survive scene serialization', () => {
   const previousImage = globalThis.Image;
   const previousElement = globalThis.HTMLImageElement;

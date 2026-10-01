@@ -21,8 +21,12 @@ export async function changePdfPage(app, nodeId, index, renderPage = null) {
       image.src = page.src;
     });
     if (app.scene.getNode(nodeId) !== node) return;
+    const pageSizes = node.pdfData.pageSizes || (node.pdfData.pageSizes = {});
+    pageSizes[node.pdfData.pageIndex] = { width: node.width, height: node.height };
+    const savedSize = pageSizes[index];
     node.image = image;
-    node.height = node.width * page.height / page.width;
+    node.width = savedSize?.width ?? node.width;
+    node.height = savedSize?.height ?? node.width * page.height / page.width;
     node.showPdfPage(index);
     node.name = `📄 ${node.pdfData.name} · ${index + 1}/${node.pdfData.pageCount}`;
     app.scheduleContentSave();

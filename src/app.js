@@ -3006,11 +3006,13 @@ class NestedCanvasApp {
         const scaleWidth = (scaleX + scaleY) * 0.5;
         const scaledPages = {};
         for (const [pageIndex, strokes] of Object.entries(this.resizeInitialPdfPages)) {
-          scaledPages[pageIndex] = strokes.map(stroke => ({
-            ...stroke,
-            baseWidth: stroke.baseWidth * scaleWidth,
-            points: stroke.points.map(pt => ({ ...pt, x: pt.x * scaleX, y: pt.y * scaleY })),
-          }));
+          scaledPages[pageIndex] = Number(pageIndex) === node.pdfData.pageIndex
+            ? strokes.map(stroke => ({
+              ...stroke,
+              baseWidth: stroke.baseWidth * scaleWidth,
+              points: stroke.points.map(pt => ({ ...pt, x: pt.x * scaleX, y: pt.y * scaleY })),
+            }))
+            : strokes;
         }
         node.pdfData.annotationPages = scaledPages;
         node.elements = (scaledPages[node.pdfData.pageIndex] || []).map(stroke => Stroke.fromJSON(stroke));
