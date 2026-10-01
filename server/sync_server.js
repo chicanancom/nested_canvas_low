@@ -312,6 +312,21 @@ export function startSyncServer(port = 8765) {
     return null;
   }
 
+  function updateNodeStrokes(target, pdfPageIndex, update) {
+    if (!target) return;
+    if (!target.pdfData) {
+      target.elements = update(Array.isArray(target.elements) ? target.elements : []);
+      return;
+    }
+    const page = pdfPageIndex ?? target.pdfData.pageIndex;
+    if (!target.pdfData.annotationPages) target.pdfData.annotationPages = {};
+    const active = page === target.pdfData.pageIndex;
+    const strokes = active ? target.elements : target.pdfData.annotationPages[page];
+    const next = update(Array.isArray(strokes) ? strokes : []);
+    target.pdfData.annotationPages[page] = next;
+    if (active) target.elements = next;
+  }
+
   function removeNodeFromTree(rootNode, id) {
     if (!rootNode || !rootNode.children) return false;
     const idx = rootNode.children.findIndex(c => c.id === id);
@@ -607,7 +622,7 @@ export function startSyncServer(port = 8765) {
       }
 
       if (type === 'CANVAS_STROKE_ADD') {
-        const { nodeId, stroke, sendTime } = data;
+        const { nodeId, stroke, sendTime, pdfPageIndex } = data;
         const pts = stroke?.points?.length || 0;
         const latency = sendTime ? `${Date.now() - sendTime}ms` : 'n/a';
         console.log(`[SyncServer] ✏️ Stroke added by ${clientIp}: node="${nodeId || 'root'}", ${pts} pts (Độ trễ LAN: ${latency})`);
@@ -629,20 +644,16 @@ export function startSyncServer(port = 8765) {
           const root = lastCanvasScene.root || lastCanvasScene;
           const target = (nodeId && nodeId !== 'root') ? (findNodeInTree(root, nodeId) || root) : root;
           if (target && (typeof data.pageIndex !== 'number' || data.pageIndex === lastCanvasPageIndex)) {
-            if (!Array.isArray(target.elements)) target.elements = [];
-            if (!target.elements.some(s => s.id === stroke.id)) {
-              target.elements.push(stroke);
-            }
+            updateNodeStrokes(target, pdfPageIndex, strokes =>
+              strokes.some(s => s.id === stroke.id) ? strokes : [...strokes, stroke]);
           }
           if (currentActiveSessionContent && currentActiveSessionContent.scene &&
               (typeof data.pageIndex !== 'number' || data.pageIndex === (currentActiveSessionContent.currentPageIndex ?? lastCanvasPageIndex))) {
             const sRoot = currentActiveSessionContent.scene.root || currentActiveSessionContent.scene;
             const sTarget = (nodeId && nodeId !== 'root') ? (findNodeInTree(sRoot, nodeId) || sRoot) : sRoot;
             if (sTarget) {
-              if (!Array.isArray(sTarget.elements)) sTarget.elements = [];
-              if (!sTarget.elements.some(s => s.id === stroke.id)) {
-                sTarget.elements.push(stroke);
-              }
+              updateNodeStrokes(sTarget, pdfPageIndex, strokes =>
+                strokes.some(s => s.id === stroke.id) ? strokes : [...strokes, stroke]);
             }
           }
           if (typeof data.pageIndex === 'number') {
@@ -653,10 +664,8 @@ export function startSyncServer(port = 8765) {
                   const pRoot = pg.scene.root || pg.scene;
                   const pTarget = (nodeId && nodeId !== 'root') ? (findNodeInTree(pRoot, nodeId) || pRoot) : pRoot;
                   if (pTarget) {
-                    if (!Array.isArray(pTarget.elements)) pTarget.elements = [];
-                    if (!pTarget.elements.some(s => s.id === stroke.id)) {
-                      pTarget.elements.push(stroke);
-                    }
+                    updateNodeStrokes(pTarget, pdfPageIndex, strokes =>
+                      strokes.some(s => s.id === stroke.id) ? strokes : [...strokes, stroke]);
                   }
                 }
               }
@@ -671,22 +680,34 @@ export function startSyncServer(port = 8765) {
       }
 
       if (type === 'CANVAS_STROKE_ERASE') {
-        const { nodeId, removedStrokeIds } = data;
+        const { nodeId, removedStrokeIds, pdfPageIndex } = data;
         if (lastCanvasScene && Array.isArray(removedStrokeIds)) {
           const root = lastCanvasScene.root || lastCanvasScene;
           const target = findNodeInTree(root, nodeId) || root;
-          if (target && Array.isArray(target.elements)) {
+          if (target) {
             const idSet = new Set(removedStrokeIds);
-            target.elements = target.elements.filter(s => !idSet.has(s.id));
+            updateNodeStrokes(target, pdfPageIndex, strokes => strokes.filter(s => !idSet.has(s.id)));
           }
         }
         if (currentActiveSessionContent && currentActiveSessionContent.scene && Array.isArray(removedStrokeIds)) {
           const sRoot = currentActiveSessionContent.scene.root || currentActiveSessionContent.scene;
           const sTarget = findNodeInTree(sRoot, nodeId) || sRoot;
-          if (sTarget && Array.isArray(sTarget.elements)) {
+          if (sTarget) {
             const idSet = new Set(removedStrokeIds);
-            sTarget.elements = sTarget.elements.filter(s => !idSet.has(s.id));
+            updateNodeStrokes(sTarget, pdfPageIndex, strokes => strokes.filter(s => !idSet.has(s.id)));
           }
+        }
+        if (Array.isArray(removedStrokeIds) && typeof data.pageIndex === 'number') {
+          const idSet = new Set(removedStrokeIds);
+          const updatePage = pages => {
+            const scene = pages?.[data.pageIndex]?.scene;
+            if (!scene) return;
+            const root = scene.root || scene;
+            const target = findNodeInTree(root, nodeId) || root;
+            updateNodeStrokes(target, pdfPageIndex, strokes => strokes.filter(s => !idSet.has(s.id)));
+          };
+          updatePage(lastCanvasPages);
+          updatePage(currentActiveSessionContent?.pages);
         }
         scheduleSaveState();
         broadcastToAll(JSON.stringify(data), ws);
@@ -902,7 +923,7 @@ export function startSyncServer(port = 8765) {
 
       // 6. Stroke added to a shared board or any of its nested child boards
       if (type === 'STROKE_ADD') {
-        const { boardId, nodeId, stroke } = data;
+        const { boardId, nodeId, stroke, pdfPageIndex } = data;
         const targetRoomId = boardId;
 
         if (!targetRoomId || !sharedBoards.has(targetRoomId)) return;
@@ -911,8 +932,8 @@ export function startSyncServer(port = 8765) {
           const rootNode = boardStates.get(targetRoomId);
           const targetNode = findNodeInTree(rootNode, nodeId || targetRoomId);
           if (targetNode) {
-            if (!Array.isArray(targetNode.elements)) targetNode.elements = [];
-            targetNode.elements.push(stroke);
+            updateNodeStrokes(targetNode, pdfPageIndex, strokes =>
+              strokes.some(s => s.id === stroke.id) ? strokes : [...strokes, stroke]);
           }
         }
 
@@ -936,16 +957,16 @@ export function startSyncServer(port = 8765) {
 
       // 8. Strokes erased in a shared board or any of its nested child boards
       if (type === 'STROKE_ERASE') {
-        const { boardId, nodeId, removedStrokeIds } = data;
+        const { boardId, nodeId, removedStrokeIds, pdfPageIndex } = data;
         const targetRoomId = boardId;
         if (!targetRoomId || !sharedBoards.has(targetRoomId)) return;
 
         if (removedStrokeIds && boardStates.has(targetRoomId)) {
           const rootNode = boardStates.get(targetRoomId);
           const targetNode = findNodeInTree(rootNode, nodeId || targetRoomId);
-          if (targetNode && Array.isArray(targetNode.elements)) {
+          if (targetNode) {
             const idSet = new Set(removedStrokeIds);
-            targetNode.elements = targetNode.elements.filter((s) => !idSet.has(s.id));
+            updateNodeStrokes(targetNode, pdfPageIndex, strokes => strokes.filter(s => !idSet.has(s.id)));
           }
         }
         if (boardRooms.has(targetRoomId)) {
@@ -1086,17 +1107,34 @@ export function startSyncServer(port = 8765) {
 
       // 12.1 Node clear
       if (type === 'NODE_CLEAR') {
-        const { boardId, nodeId } = data;
+        const { boardId, nodeId, pdfPageIndex } = data;
         const targetId = nodeId || boardId;
 
         if (lastCanvasScene && targetId) {
           const root = lastCanvasScene.root || lastCanvasScene;
           const targetNode = findNodeInTree(root, targetId) || (targetId === root.id ? root : null);
           if (targetNode) {
-            targetNode.elements = [];
+            updateNodeStrokes(targetNode, pdfPageIndex, () => []);
             targetNode.images = [];
             scheduleSaveState();
           }
+        }
+
+        if (currentActiveSessionContent?.scene && targetId) {
+          const root = currentActiveSessionContent.scene.root || currentActiveSessionContent.scene;
+          const targetNode = findNodeInTree(root, targetId);
+          if (targetNode) updateNodeStrokes(targetNode, pdfPageIndex, () => []);
+        }
+        if (typeof data.pageIndex === 'number' && targetId) {
+          const updatePage = pages => {
+            const scene = pages?.[data.pageIndex]?.scene;
+            if (!scene) return;
+            const root = scene.root || scene;
+            const targetNode = findNodeInTree(root, targetId);
+            if (targetNode) updateNodeStrokes(targetNode, pdfPageIndex, () => []);
+          };
+          updatePage(lastCanvasPages);
+          updatePage(currentActiveSessionContent?.pages);
         }
 
         if (boardId && boardRooms.has(boardId)) {

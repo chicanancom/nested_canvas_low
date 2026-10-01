@@ -34,7 +34,6 @@ class PCDisplayApp {
     this.toastText = document.getElementById('display-toast-text');
     this.idleStatusText = document.getElementById('idle-status-text');
     this.idleStatusDot = document.getElementById('idle-status-dot');
-
     if (this.idleOverlay) {
       this.idleOverlay.addEventListener('click', () => {
         this.hasSceneData = true;
@@ -1086,7 +1085,8 @@ class PCDisplayApp {
     this.syncClient.on('NODE_CLEAR', (data) => {
       const target = (data.nodeId ? this.scene.getNode(data.nodeId) : null) || this.scene.root;
       if (target) {
-        target.elements = [];
+        if (target.pdfData) target.setPdfPageStrokes(data.pdfPageIndex ?? target.pdfData.pageIndex, []);
+        else target.elements = [];
         target.images = [];
         this.requestRender();
       }
@@ -1233,7 +1233,7 @@ class PCDisplayApp {
   }
 
   applyStrokeAdd(data) {
-    const { nodeId, stroke, clientId, sendTime, pageIndex } = data;
+    const { nodeId, stroke, clientId, sendTime, pageIndex, pdfPageIndex } = data;
     if (!stroke) return;
 
     // Định tuyến nét vẽ theo pageIndex nếu có và đang ở trang khác
@@ -1244,9 +1244,11 @@ class PCDisplayApp {
       const pageNode = (nodeId ? targetScene.getNode(nodeId) : null) || targetScene.root;
       if (pageNode) {
         const strokeObj = Stroke.fromJSON(stroke);
-        if (!Array.isArray(pageNode.elements)) pageNode.elements = [];
-        if (!pageNode.elements.some((s) => s.id === strokeObj.id)) {
-          pageNode.elements.push(strokeObj);
+        const pdfPage = pageNode.pdfData ? (pdfPageIndex ?? pageNode.pdfData.pageIndex) : null;
+        const strokes = pdfPage != null ? pageNode.getPdfPageStrokes(pdfPage) : pageNode.elements;
+        if (!strokes.some((s) => s.id === strokeObj.id)) {
+          if (pdfPage != null) pageNode.setPdfPageStrokes(pdfPage, [...strokes, strokeObj]);
+          else pageNode.addStroke(strokeObj);
         }
         this.pages[pageIndex].scene = targetScene.toJSON();
         this.pages[pageIndex]._lastSceneJSON = this.pages[pageIndex].scene;
@@ -1259,9 +1261,11 @@ class PCDisplayApp {
       const targetNode = (nodeId ? this.scene.getNode(nodeId) : null) || this.scene.root;
       if (targetNode) {
         const strokeObj = Stroke.fromJSON(stroke);
-        if (!Array.isArray(targetNode.elements)) targetNode.elements = [];
-        if (!targetNode.elements.some((s) => s.id === strokeObj.id)) {
-          targetNode.elements.push(strokeObj);
+        const pdfPage = targetNode.pdfData ? (pdfPageIndex ?? targetNode.pdfData.pageIndex) : null;
+        const strokes = pdfPage != null ? targetNode.getPdfPageStrokes(pdfPage) : targetNode.elements;
+        if (!strokes.some((s) => s.id === strokeObj.id)) {
+          if (pdfPage != null) targetNode.setPdfPageStrokes(pdfPage, [...strokes, strokeObj]);
+          else targetNode.addStroke(strokeObj);
         }
         if (this.pages && this.pages[this.currentPageIndex]) {
           this.pages[this.currentPageIndex].scene = this.scene.toJSON();
@@ -1284,14 +1288,17 @@ class PCDisplayApp {
   }
 
   applyStrokeErase(data) {
-    const { nodeId, removedStrokeIds } = data;
+    const { nodeId, removedStrokeIds, pdfPageIndex } = data;
     if (!Array.isArray(removedStrokeIds)) return;
     const targetNode = (nodeId ? this.scene.getNode(nodeId) : null) || this.scene.root;
     if (targetNode && Array.isArray(targetNode.elements)) {
       const idSet = new Set(removedStrokeIds);
-      const before = targetNode.elements.length;
-      targetNode.elements = targetNode.elements.filter((s) => !idSet.has(s.id));
-      console.log(`[PC Display] 🧹 Erased ${before - targetNode.elements.length} strokes in "${targetNode.name || targetNode.id}"`);
+      const pdfPage = targetNode.pdfData ? (pdfPageIndex ?? targetNode.pdfData.pageIndex) : null;
+      const strokes = pdfPage != null ? targetNode.getPdfPageStrokes(pdfPage) : targetNode.elements;
+      const remaining = strokes.filter((s) => !idSet.has(s.id));
+      if (pdfPage != null) targetNode.setPdfPageStrokes(pdfPage, remaining);
+      else targetNode.elements = remaining;
+      console.log(`[PC Display] 🧹 Erased ${strokes.length - remaining.length} strokes in "${targetNode.name || targetNode.id}"`);
       this.saveDisplayState();
       this.requestRender();
     }
@@ -1351,7 +1358,9 @@ class PCDisplayApp {
       this.requestRender();
     });
 
-    window.addEventListener('beforeunload', () => this.saveDisplayState());
+    window.addEventListener('beforeunload', () => {
+      this.saveDisplayState();
+    });
     window.addEventListener('pagehide', () => this.saveDisplayState());
 
     // Phím tắt toàn màn hình & chuyển chế độ hiển thị

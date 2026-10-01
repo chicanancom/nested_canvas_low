@@ -26,6 +26,7 @@
   "dependencies": {
     "@capacitor/core": "^6.2.2",
     "jspdf": "^4.2.1",
+    "pdfjs-dist": "^6.3.289",
     "ws": "^8.21.3"
   }
 }

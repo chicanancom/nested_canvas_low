@@ -15,6 +15,11 @@ impl SegmentEraser {
     /// Erases parts of a single stroke overlapping with circle `(eraser_pos, radius)`.
     /// Returns `None` if stroke was untouched, or `Some(Vec<Stroke>)` with replacement sub-strokes.
     pub fn erase_stroke(stroke: &Stroke, eraser_pos: Vec2, radius: f32) -> Option<Vec<Stroke>> {
+        if !eraser_pos.is_finite() || !radius.is_finite() || radius < 0.0
+            || stroke.points.iter().any(|point| !point.pos().is_finite())
+        {
+            return None;
+        }
         let inflated_bounds = stroke.bounds.inflate(radius);
         if !inflated_bounds.contains_point(eraser_pos) {
             return None;
@@ -129,7 +134,7 @@ impl SegmentEraser {
         let c = f.dot(f) - radius * radius;
 
         let discriminant = b * b - 4.0 * a * c;
-        if discriminant < 0.0 || a <= 1e-6 {
+        if !discriminant.is_finite() || discriminant < 0.0 || !a.is_finite() || a <= 1e-6 {
             return Vec::new();
         }
 
@@ -144,7 +149,7 @@ impl SegmentEraser {
         if (0.0..=1.0).contains(&t2) && (t2 - t1).abs() > 1e-5 {
             out.push(t2);
         }
-        out.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        out.sort_by(f32::total_cmp);
         out
     }
 

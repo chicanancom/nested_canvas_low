@@ -444,16 +444,8 @@ export class CanvasRenderer {
     if (isRoot) {
       this.stats.renderedNodes++;
 
-      // 1. Render Children First: Math Graphs & Images on the Infinite Canvas
-      for (const child of node.children) {
-        const childScreenTransform = child.transform.then(parentScreenTransform);
-        const childBounds = child.localBounds().transform(childScreenTransform);
-        if (!viewportFrustum.intersects(childBounds)) {
-          this.stats.culledNodes++;
-          continue;
-        }
+      const drawChild = (child, childScreenTransform, childBounds) => {
         this.stats.renderedNodes++;
-
         if (child.youtubeData) {
           this.drawYoutubeNode(ctx, child, childBounds, child.id === selectedNodeId, camera.zoom);
         } else if (child.image) {
@@ -468,13 +460,53 @@ export class CanvasRenderer {
 
         // Render any strokes inside the child if any exist (legacy compatibility)
         if (child.elements && child.elements.length > 0) {
+          if (child.pdfData) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(childBounds.minX, childBounds.minY, childBounds.width, childBounds.height);
+            ctx.clip();
+          }
           for (const stroke of child.elements) {
             this.drawStroke(ctx, stroke, childScreenTransform);
           }
+          if (child.pdfData) ctx.restore();
+        }
+      };
+
+      const drawLiveStroke = (stroke, targetNodeId, pdfPageIndex) => {
+        const target = node.children.find(child => child.id === targetNodeId && child.pdfData);
+        if (!target) {
+          this.drawStroke(ctx, stroke, parentScreenTransform);
+          return;
+        }
+        if (pdfPageIndex != null && pdfPageIndex !== target.pdfData.pageIndex) return;
+        const transform = target.transform.then(parentScreenTransform);
+        const bounds = target.localBounds().transform(transform);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(bounds.minX, bounds.minY, bounds.width, bounds.height);
+        ctx.clip();
+        this.drawStroke(ctx, stroke, transform);
+        ctx.restore();
+      };
+
+      // PDF pages sit above the mother canvas; only their own page annotations sit above them.
+      const pdfNodes = [];
+      for (const child of node.children) {
+        const childScreenTransform = child.transform.then(parentScreenTransform);
+        const childBounds = child.localBounds().transform(childScreenTransform);
+        if (!viewportFrustum.intersects(childBounds)) {
+          this.stats.culledNodes++;
+          continue;
+        }
+        if (child.pdfData) {
+          pdfNodes.push({ child, childScreenTransform, childBounds });
+        } else {
+          drawChild(child, childScreenTransform, childBounds);
         }
       }
 
-      // 2. Render Freehand Strokes on the Unified Infinite Canvas (Overlaid on top so you can annotate over images & graphs!)
+      // Freehand strokes on the mother canvas remain behind every PDF page.
       const { a: ta, b: tb, c: tc, d: td, tx: ttx, ty: tty } = parentScreenTransform;
       const scMinX = viewportFrustum.minX, scMaxX = viewportFrustum.maxX;
       const scMinY = viewportFrustum.minY, scMaxY = viewportFrustum.maxY;
@@ -503,6 +535,10 @@ export class CanvasRenderer {
         }
       }
 
+      for (const { child, childScreenTransform, childBounds } of pdfNodes) {
+        drawChild(child, childScreenTransform, childBounds);
+      }
+
       // 3. Render Live In-Flight Strokes (Hỗ trợ đa điểm Multi-touch & đơn điểm)
       if (activeSession) {
         const localSessions = activeSession instanceof Map
@@ -519,7 +555,7 @@ export class CanvasRenderer {
                 baseWidth: sess.baseWidth,
                 brushType: sess.brushType,
               };
-              this.drawStroke(ctx, liveStroke, parentScreenTransform);
+              drawLiveStroke(liveStroke, sess.targetNodeId, sess.pdfPageIndex);
             }
           }
         }
@@ -536,7 +572,7 @@ export class CanvasRenderer {
               baseWidth: rSession.baseWidth || 3.0,
               brushType: rSession.brushType || 'solid',
             };
-            this.drawStroke(ctx, rStroke, parentScreenTransform);
+            drawLiveStroke(rStroke, rSession.targetNodeId, rSession.pdfPageIndex);
           }
         }
       }

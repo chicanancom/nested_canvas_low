@@ -59,6 +59,8 @@ html, body {
   position: relative;
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
+  height: var(--app-viewport-height, 100dvh);
   overflow: hidden;
 }
 
@@ -863,6 +865,7 @@ body.mode-single-board #mobile-single-board-ui {
   width: 100vw;
   height: 100vh;
   height: 100dvh;
+  height: var(--app-viewport-height, 100dvh);
   pointer-events: none;
   z-index: 99;
   display: flex;

@@ -1,18 +1,26 @@
 export class AddStrokeCommand {
-  constructor(nodeId, stroke) {
+  constructor(nodeId, stroke, pdfPageIndex = null) {
     this.nodeId = nodeId;
     this.stroke = stroke;
+    this.pdfPageIndex = pdfPageIndex;
     this.description = 'Add Stroke';
   }
 
   execute(scene) {
     const node = scene.getNode(this.nodeId);
-    if (node) node.addStroke(this.stroke);
+    if (!node) return;
+    if (node.pdfData && this.pdfPageIndex != null) {
+      node.setPdfPageStrokes(this.pdfPageIndex, [...node.getPdfPageStrokes(this.pdfPageIndex), this.stroke]);
+    } else node.addStroke(this.stroke);
   }
 
   undo(scene) {
     const node = scene.getNode(this.nodeId);
-    if (node) node.removeStroke(this.stroke.id);
+    if (!node) return;
+    if (node.pdfData && this.pdfPageIndex != null) {
+      node.setPdfPageStrokes(this.pdfPageIndex,
+        node.getPdfPageStrokes(this.pdfPageIndex).filter(stroke => stroke.id !== this.stroke.id));
+    } else node.removeStroke(this.stroke.id);
   }
 }
 
@@ -35,16 +43,21 @@ export class AddImageCommand {
 }
 
 export class EraseCommand {
-  constructor(nodeId, removedStrokes, addedStrokes = []) {
+  constructor(nodeId, removedStrokes, addedStrokes = [], pdfPageIndex = null) {
     this.nodeId = nodeId;
     this.removedStrokes = removedStrokes;
     this.addedStrokes = addedStrokes;
+    this.pdfPageIndex = pdfPageIndex;
     this.description = 'Erase';
   }
 
   execute(scene) {
     const node = scene.getNode(this.nodeId);
     if (!node) return;
+    if (node.pdfData && this.pdfPageIndex != null) {
+      node.setPdfPageStrokes(this.pdfPageIndex, this.addedStrokes);
+      return;
+    }
     const removedSet = new Set(this.removedStrokes.map((s) => s.id));
     node.elements = node.elements.filter((s) => !removedSet.has(s.id));
     for (const sub of this.addedStrokes) {
@@ -55,6 +68,10 @@ export class EraseCommand {
   undo(scene) {
     const node = scene.getNode(this.nodeId);
     if (!node) return;
+    if (node.pdfData && this.pdfPageIndex != null) {
+      node.setPdfPageStrokes(this.pdfPageIndex, this.removedStrokes);
+      return;
+    }
     const addedSet = new Set(this.addedStrokes.map((s) => s.id));
     node.elements = node.elements.filter((s) => !addedSet.has(s.id));
     for (const orig of this.removedStrokes) {

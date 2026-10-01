@@ -68,6 +68,14 @@ export class SyncClient {
       }
     } catch (e) {}
 
+    // Browser LAN pages are served by the same computer as the sync server.
+    // A previously saved address must not redirect this tab to an old PC.
+    const isCapacitor = !!(window.Capacitor?.isNativePlatform() || window.location.protocol === 'capacitor:' || (window.location.hostname === 'localhost' && !window.location.port));
+    const pageHost = window.location.hostname;
+    if (!isCapacitor && (/^(\d{1,3}\.){3}\d{1,3}$/.test(pageHost) || pageHost === 'localhost')) {
+      return pageHost;
+    }
+
     // 2. Kiểm tra IP đã lưu trong localStorage
     try {
       const saved = localStorage.getItem('nestedcanvas_server_host');
@@ -75,7 +83,6 @@ export class SyncClient {
     } catch (e) {}
 
     // 3. Nhận diện nếu đang chạy trong App APK (Capacitor)
-    const isCapacitor = !!(window.Capacitor?.isNativePlatform() || window.location.protocol === 'capacitor:' || (window.location.hostname === 'localhost' && (!window.location.port || window.location.port === '')));
     if (isCapacitor) {
       // Mặc định trỏ về IP của máy tính đang chạy backend
       return '192.168.1.121';

@@ -368,15 +368,23 @@ impl BatchCommand {
 
 impl Command for BatchCommand {
     fn execute(&mut self, scene: &mut SceneGraph) -> Result<()> {
+        let original = scene.clone();
         for cmd in &mut self.commands {
-            cmd.execute(scene)?;
+            if let Err(error) = cmd.execute(scene) {
+                *scene = original;
+                return Err(error);
+            }
         }
         Ok(())
     }
 
     fn undo(&mut self, scene: &mut SceneGraph) -> Result<()> {
+        let original = scene.clone();
         for cmd in self.commands.iter_mut().rev() {
-            cmd.undo(scene)?;
+            if let Err(error) = cmd.undo(scene) {
+                *scene = original;
+                return Err(error);
+            }
         }
         Ok(())
     }

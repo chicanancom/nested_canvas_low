@@ -41,6 +41,19 @@
   overflow: visible;
 }
 .top-bar > * { flex-shrink: 0; }
+.top-bar .topbar-toggle { display: grid; place-items: center; padding: 0; touch-action: manipulation; }
+.top-bar.top-bar-collapsed {
+  right: auto !important;
+  width: 42px !important;
+  min-height: 42px !important;
+  height: 42px !important;
+  padding: 4px !important;
+  overflow: hidden !important;
+  border-radius: 12px;
+}
+.top-bar.top-bar-collapsed > *:not(#btn-toggle-topbar) { display: none !important; }
+.top-bar.top-bar-collapsed #btn-toggle-topbar { width: 32px; height: 32px; }
+.top-bar.top-bar-collapsed #btn-toggle-topbar svg { transform: rotate(180deg); }
 .top-bar .brand { margin-right: 8px; font-size: 13px; }
 .top-bar .btn-action {
   height: 34px;
@@ -68,6 +81,8 @@
   overflow-y: auto;
   scrollbar-width: none;
 }
+#tool-ocr,
+#tool-multipoint { display: none !important; }
 .left-toolbar .tool-btn { width: 36px; height: 36px; flex-shrink: 0; border-radius: 8px; }
 .left-toolbar .tool-btn svg { width: 18px; height: 18px; }
 .left-toolbar .tool-btn.active {
@@ -108,6 +123,16 @@
 .custom-color-input::-webkit-color-swatch { border: 0; border-radius: 50%; }
 .custom-color-input::-moz-color-swatch { border: 0; border-radius: 50%; }
 .bottom-bar .size-slider-wrapper { gap: 6px; }
+.eraser-controls { display: flex; align-items: center; gap: 12px; }
+.bottom-bar [hidden] { display: none !important; }
+.eraser-controls[hidden] { display: none !important; }
+.eraser-mode-picker { display: flex; padding: 3px; gap: 2px; border: 1px solid rgba(179,197,220,.2); border-radius: 8px; background: rgba(0,0,0,.18); }
+.eraser-mode-btn { min-height: 30px; padding: 0 10px; border: 0; border-radius: 6px; color: #aab8c8; background: transparent; font: inherit; font-size: 11px; cursor: pointer; }
+.eraser-mode-btn { display: grid; place-items: center; width: 34px; padding: 0; }
+.eraser-mode-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.eraser-mode-btn:hover { background: rgba(148,180,218,.12); color: #e1eaf5; }
+.eraser-mode-btn.active { background: #243c56; color: #b5d7ff; box-shadow: inset 0 0 0 1px rgba(114,180,255,.35); }
+.eraser-size-wrapper { min-width: 170px; }
 .bottom-bar input[type="range"] { width: 64px; }
 .bottom-bar .btn-multipoint-toggle { padding: 6px 8px; box-shadow: none; font-size: 11px; }
 .brush-picker { position: relative; }
@@ -235,12 +260,12 @@
     right: 4px;
     bottom: max(4px, env(safe-area-inset-bottom));
     min-height: 38px;
-    height: 38px;
+    height: auto;
     padding: 3px 5px;
     gap: 5px;
     border-radius: 9px;
-    flex-wrap: nowrap;
-    overflow-x: auto;
+    flex-wrap: wrap;
+    overflow: visible;
   }
   .brush-picker summary { min-width: 72px; height: 28px; padding: 0 7px; gap: 5px; font-size: 10px; }
   .bottom-bar .color-palette { gap: 4px; }
@@ -355,3 +380,146 @@
   .page-controls button { transition: none; }
   .page-controls button:active { transform: none; }
 }
+
+/* Tool options must remain reachable in both workspace and shared-board views. */
+.mobile-bottom-bar [hidden] { display: none !important; }
+.mobile-bottom-bar .eraser-controls { flex-wrap: wrap; justify-content: center; }
+.eraser-size-wrapper { display: flex; align-items: center; gap: 8px; }
+.eraser-mode-btn { width: auto; min-width: 44px; padding: 0 8px; }
+@media (max-width: 768px), (pointer: coarse) and (max-width: 1024px) {
+  #app > .bottom-bar { overflow: visible; }
+  .bottom-right-hud { bottom: max(100px, calc(env(safe-area-inset-bottom) + 96px)); }
+  .mobile-palette-drawer { flex-wrap: wrap; justify-content: center; }
+}
+
+/* Keep phone pagination compact; place after the desktop page rules so its
+   dimensions also apply in landscape on touch screens. */
+@media (max-width: 768px), (pointer: coarse) and (max-width: 1024px) {
+  .bottom-right-hud > .page-controls {
+    gap: 2px;
+    padding: 3px;
+    border-radius: 9px;
+  }
+  .page-controls .page-arrow { width: 30px; height: 32px; border-radius: 6px; }
+  .page-controls .page-current {
+    width: 80px;
+    height: 32px;
+    padding: 3px 6px;
+    gap: 3px;
+    border-radius: 6px;
+  }
+  .page-current-copy { gap: 1px; }
+  #page-current-name { font-size: 10px; }
+  #page-current-count { font-size: 9px; }
+  .page-controls svg { width: 14px; height: 14px; }
+  .page-controls .page-add {
+    width: 30px;
+    height: 32px;
+    flex-basis: 30px;
+    border-radius: 6px;
+  }
+  .page-add > span { font-size: 19px; }
+  .page-controls .page-separator { height: 18px; margin: 0 1px; }
+}
+
+/* Flexible session chooser: controls stay visible while the library scrolls. */
+#modal-sessions {
+  height: 100dvh;
+  height: var(--app-viewport-height, 100dvh);
+  padding: 12px;
+}
+#modal-sessions > .sessions-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(900px, 100%) !important;
+  max-width: 100% !important;
+  height: min(760px, calc(100vh - 24px));
+  height: min(760px, calc(var(--app-viewport-height, 100dvh) - 24px));
+  max-height: 100% !important;
+  min-height: 0;
+  padding: 20px;
+  gap: 14px;
+  overflow: hidden;
+  border-radius: 16px;
+  background: rgba(13, 17, 23, .97);
+  border: 1px solid rgba(88, 166, 255, .3);
+  box-shadow: 0 28px 70px #000a;
+}
+.sessions-dialog-header, .sessions-dialog-tools, .sessions-dialog-footer { flex-shrink: 0; }
+.sessions-dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.sessions-dialog-header > div, .sessions-dialog-header > div > div { min-width: 0; }
+.sessions-dialog-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.sessions-dialog-search { flex: 1 1 220px; min-width: 0; position: relative; }
+#modal-sessions #sessions-grid {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(210px, 100%), 1fr));
+  align-content: start;
+  gap: 12px;
+  padding: 4px 6px 8px 2px;
+  overflow-y: scroll;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #52647a #18212d;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+#sessions-grid::-webkit-scrollbar { width: 8px; }
+#sessions-grid::-webkit-scrollbar-track { background: #18212d; border-radius: 6px; }
+#sessions-grid::-webkit-scrollbar-thumb { background: #52647a; border-radius: 6px; }
+#sessions-grid::-webkit-scrollbar-thumb:hover { background: #7996b9; }
+#sessions-grid:focus-visible { outline: 2px solid #94c6ff; outline-offset: 2px; }
+#sessions-grid .session-card { min-width: 0; }
+.sessions-dialog-footer {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+@media (max-width: 600px), (max-height: 500px) {
+  #modal-sessions { padding: 6px; }
+  #modal-sessions > .sessions-dialog {
+    height: calc(100vh - 12px);
+    height: calc(var(--app-viewport-height, 100dvh) - 12px);
+    padding: 12px;
+    gap: 10px;
+  }
+  .sessions-dialog-tools { gap: 6px; }
+  #modal-sessions .sessions-dialog-tools .btn-action { padding: 7px 9px !important; font-size: 11px !important; }
+  #modal-sessions #input-search-sessions { font-size: 16px !important; }
+  #modal-sessions #sessions-grid { gap: 10px; }
+  #sessions-grid .session-card-thumb-wrap, #sessions-grid .session-card-thumb { height: 80px; }
+}
+@media (max-width: 480px) {
+  .sessions-dialog-search { flex-basis: 100%; }
+  #modal-sessions #sessions-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.pdf-navigation {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid #52647a;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, .96);
+  color: #e1eaf5;
+  pointer-events: auto;
+  touch-action: manipulation;
+  box-shadow: 0 3px 12px #0004;
+}
+.pdf-navigation button { width: 32px; height: 32px; border: 0; border-radius: 5px; background: #253344; color: inherit; font-size: 24px; cursor: pointer; }
+.pdf-navigation button:disabled { opacity: .35; cursor: default; }
+.pdf-page-count { min-width: 62px; text-align: center; font-size: 11px; font-variant-numeric: tabular-nums; }

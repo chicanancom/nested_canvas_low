@@ -81,6 +81,8 @@ test('server routes delayed strokes without polluting the active scene', () => {
   const server = readFileSync(new URL('../server/sync_server.js', import.meta.url), 'utf8');
   const start = server.indexOf("if (type === 'CANVAS_STROKE_ADD')");
   const end = server.indexOf("if (type === 'CANVAS_STROKE_ERASE')", start);
+  const helperStart = server.indexOf('function updateNodeStrokes(');
+  const helperEnd = server.indexOf('function removeNodeFromTree', helperStart);
   const context = {
     type: 'CANVAS_STROKE_ADD', data: { pageIndex: 0, stroke: stroke('late') },
     lastCanvasPageIndex: 1, lastCanvasScene: scene(),
@@ -88,7 +90,7 @@ test('server routes delayed strokes without polluting the active scene', () => {
     currentActiveSessionContent: { currentPageIndex: 1, scene: scene(), pages: [{ scene: scene() }, { scene: scene() }] },
     clientIp: 'test', ws: {}, console, scheduleSaveState() {}, broadcastToAll() {},
   };
-  vm.runInNewContext('(function () {' + server.slice(start, end) + '})()', context);
+  vm.runInNewContext('(function () {' + server.slice(helperStart, helperEnd) + server.slice(start, end) + '})()', context);
   assert.equal(context.lastCanvasScene.root.elements.length, 0);
   assert.equal(context.currentActiveSessionContent.scene.root.elements.length, 0);
   assert.equal(context.lastCanvasPages[0].scene.root.elements[0].id, 'late');

@@ -32,6 +32,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        registerPlugin(PdfImportPlugin.class);
         super.onCreate(savedInstanceState);
 
         // Khởi tạo MulticastLock để chip Wi-Fi Android không lọc bỏ gói tin UDP Broadcast

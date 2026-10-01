@@ -210,10 +210,33 @@ export class CanvasNode {
 
   addStroke(stroke) {
     this.elements.push(stroke);
+    if (this.pdfData) this.setPdfPageStrokes(this.pdfData.pageIndex, this.elements);
   }
 
   removeStroke(strokeId) {
     this.elements = this.elements.filter((s) => s.id !== strokeId);
+    if (this.pdfData) this.setPdfPageStrokes(this.pdfData.pageIndex, this.elements);
+  }
+
+  getPdfPageStrokes(pageIndex) {
+    if (!this.pdfData) return this.elements;
+    if (pageIndex === this.pdfData.pageIndex) return this.elements;
+    return (this.pdfData.annotationPages?.[pageIndex] || []).map(stroke => Stroke.fromJSON(stroke));
+  }
+
+  setPdfPageStrokes(pageIndex, strokes) {
+    if (!this.pdfData) return;
+    if (!this.pdfData.annotationPages) this.pdfData.annotationPages = {};
+    this.pdfData.annotationPages[pageIndex] = strokes.map(stroke => stroke.toJSON());
+    if (pageIndex === this.pdfData.pageIndex) this.elements = strokes;
+  }
+
+  showPdfPage(pageIndex) {
+    if (!this.pdfData) return;
+    this.setPdfPageStrokes(this.pdfData.pageIndex, this.elements);
+    const strokes = (this.pdfData.annotationPages[pageIndex] || []).map(stroke => Stroke.fromJSON(stroke));
+    this.pdfData.pageIndex = pageIndex;
+    this.elements = strokes;
   }
 
   addImage(imageElement) {
@@ -280,6 +303,7 @@ export class CanvasNode {
 
   toJSON() {
     let imageSrc = null;
+    if (this.pdfData) this.setPdfPageStrokes(this.pdfData.pageIndex, this.elements);
     if (this.image) {
       if (typeof this.image === 'string') {
         imageSrc = this.image;
@@ -323,6 +347,7 @@ export class CanvasNode {
           }
         : null,
       youtubeData: this.youtubeData ? { ...this.youtubeData } : null,
+      pdfData: this.pdfData ? { ...this.pdfData } : null,
       elements: (this.elements || []).map((s) => (typeof s?.toJSON === 'function' ? s.toJSON() : s)),
       children: (this.children || []).map((c) => (typeof c?.toJSON === 'function' ? c.toJSON() : c)),
       textContent: this.textContent,
@@ -372,6 +397,7 @@ export class CanvasNode {
     if (data.id) node.id = data.id;
     if (data.isShared !== undefined) node.isShared = !!data.isShared;
     if (data.youtubeData?.videoId) node.youtubeData = { ...data.youtubeData };
+    if (data.pdfData?.source) node.pdfData = { ...data.pdfData };
     if (data.contentPan) node.contentPan = new Vec2(data.contentPan.x, data.contentPan.y);
     if (data.contentZoom) node.contentZoom = data.contentZoom;
     if (data.textContent) node.textContent = data.textContent;

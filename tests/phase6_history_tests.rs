@@ -114,3 +114,58 @@ fn test_history_transform_node() {
     history.undo(&mut scene).unwrap();
     assert_eq!(scene.get_node(child_id).unwrap().transform, t1);
 }
+
+#[test]
+fn test_failed_batch_execute_restores_scene_and_history() {
+    let mut history = HistoryManager::new(20);
+    let mut scene = SceneGraph::new();
+    let root_id = scene.root_id();
+    let before = scene.clone();
+    let stroke = Stroke::new(
+        vec![Point2D::new(0.0, 0.0, 1.0, 0)],
+        Color::BLACK,
+        2.0,
+        BrushType::Solid,
+    );
+    let batch = BatchCommand::new(
+        "Partially failing batch",
+        vec![
+            Box::new(AddStrokeCommand::new(root_id, stroke)),
+            Box::new(AddStrokeCommand::new(
+                nestedcanvas::NodeId::new(),
+                Stroke::new(
+                    vec![Point2D::new(1.0, 1.0, 1.0, 0)],
+                    Color::BLACK,
+                    2.0,
+                    BrushType::Solid,
+                ),
+            )),
+        ],
+    );
+
+    assert!(history.execute(Box::new(batch), &mut scene).is_err());
+    assert_eq!(scene, before);
+    assert!(!history.can_undo());
+}
+
+#[test]
+fn test_failed_undo_keeps_command_in_history() {
+    let mut history = HistoryManager::new(20);
+    let mut scene = SceneGraph::new();
+    let root_id = scene.root_id();
+    let stroke = Stroke::new(
+        vec![Point2D::new(0.0, 0.0, 1.0, 0)],
+        Color::BLACK,
+        2.0,
+        BrushType::Solid,
+    );
+    let stroke_id = stroke.id;
+    history
+        .execute(Box::new(AddStrokeCommand::new(root_id, stroke)), &mut scene)
+        .unwrap();
+    scene.root.remove_stroke(stroke_id);
+
+    assert!(history.undo(&mut scene).is_err());
+    assert!(history.can_undo());
+    assert!(!history.can_redo());
+}

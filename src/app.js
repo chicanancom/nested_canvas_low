@@ -8,6 +8,7 @@ import { LatexEngine } from './engine/latex_engine.js';
 import {
   AddStrokeCommand,
   AddImageCommand,
+  BatchCommand,
   CreateNodeCommand,
   EraseCommand,
   HistoryManager,
@@ -17,6 +18,8 @@ import { CanvasRenderer, BOARD_THEMES } from './engine/renderer.js';
 import { SyncClient } from './sync/client.js';
 import { SessionManager, DEFAULT_EMPTY_THUMBNAIL } from './storage/sessionManager.js';
 import { db } from './storage/db.js';
+import { updatePdfOverlays } from './engine/pdfBoards.js';
+import { extractYoutubeId, createYoutubeBoard, updateYoutubeOverlays, sendYoutubeControl } from './engine/youtubeBoards.js';
 
 class NestedCanvasApp {
   constructor() {
@@ -62,6 +65,7 @@ class NestedCanvasApp {
     this.brushColor = '#ffffff'; // Default: white chalk
     this.brushSize = 3.0;
     this.eraserRadius = 18.0;
+    this.eraserMode = 'segment';
 
     this.selectedNodeId = null;
     this.isDragging = false;
@@ -73,6 +77,7 @@ class NestedCanvasApp {
     // Active in-flight drawing gestures (Hỗ trợ đa điểm chạm / Multi-touch)
     this.activeSessions = new Map(); // pointerId -> session
     this.isMultiPointMode = false;   // Chế độ vẽ đa điểm (cho Android / Tablet)
+    this.useNativeMultiTouch = typeof window !== 'undefined' && 'ontouchstart' in window;
     this.eraserCursor = null;
     this.eraserCursors = new Map();
 
@@ -138,6 +143,7 @@ class NestedCanvasApp {
   markUnsavedChanges() {
     if (this.isApplyingRemoteSync) return;
     this.hasUnsavedChanges = true;
+    if (typeof document === 'undefined') return;
     const dot = document.getElementById('dot-unsaved-changes');
     if (dot) dot.style.visibility = 'visible';
     const label = document.getElementById('label-save-status');
@@ -1525,8 +1531,31 @@ class NestedCanvasApp {
     }
   }
 
+  syncViewportHeight() {
+    // Mobile 100vh includes space behind browser chrome. Use the visible height
+    // so bottom tool options stay on screen as the address bar opens/closes.
+    const height = window.visualViewport?.height || window.innerHeight;
+    document.documentElement.style.setProperty('--app-viewport-height', `${height}px`);
+    this.renderer.resize();
+    this.requestRender();
+  }
+
   bindEvents() {
-    window.addEventListener('resize', () => this.renderer.resize());
+    const topbarToggle = document.getElementById('btn-toggle-topbar');
+    topbarToggle?.addEventListener('click', () => {
+      const topbar = topbarToggle.closest('.top-bar');
+      const collapsed = topbar.classList.toggle('top-bar-collapsed');
+      topbarToggle.setAttribute('aria-expanded', String(!collapsed));
+      const label = collapsed ? 'Hiện thanh trên cùng' : 'Ẩn thanh trên cùng';
+      topbarToggle.title = label;
+      topbarToggle.setAttribute('aria-label', label);
+      // Reopening always starts at the toggle, even after scrolling on mobile.
+      topbar.scrollLeft = 0;
+    });
+
+    this.syncViewportHeight();
+    window.addEventListener('resize', () => this.syncViewportHeight());
+    window.visualViewport?.addEventListener('resize', () => this.syncViewportHeight());
     window.addEventListener('beforeunload', (e) => {
       if (this.hasUnsavedChanges) {
         e.preventDefault();
@@ -1562,13 +1591,24 @@ class NestedCanvasApp {
     this.canvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
     window.addEventListener('pointermove', (e) => this.onPointerMove(e));
     window.addEventListener('pointerup', (e) => this.onPointerUp(e));
-    window.addEventListener('pointercancel', (e) => this.onPointerUp(e));
+    window.addEventListener('pointercancel', (e) => {
+      if (this.isMultiPointMode && this.useNativeMultiTouch && e.pointerType === 'touch') {
+        return;
+      }
+      const session = this.activeSessions?.get(e.pointerId);
+      if (session && session.rawPoints.length <= 1) {
+        this.activeSessions.delete(e.pointerId);
+        this.requestRender();
+        return;
+      }
+      this.onPointerUp(e);
+    });
 
     // Native Touch Events (100% Reliable 2-Finger Pinch-Zoom & Two-Finger Pan on Mobile)
-    this.canvas.addEventListener('touchstart', (e) => this.onTouchStart(e), { passive: false });
+    window.addEventListener('touchstart', (e) => this.onTouchStart(e), { passive: false });
     window.addEventListener('touchmove', (e) => this.onTouchMove(e), { passive: false });
     window.addEventListener('touchend', (e) => this.onTouchEnd(e), { passive: false });
-    window.addEventListener('touchcancel', (e) => this.onTouchEnd(e), { passive: false });
+    window.addEventListener('touchcancel', (e) => this.onTouchCancel(e), { passive: false });
 
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
 
@@ -1602,6 +1642,16 @@ class NestedCanvasApp {
     document.querySelectorAll('.tool-btn[data-tool]').forEach((btn) => {
       btn.addEventListener('click', () => {
         this.setTool(btn.dataset.tool);
+      });
+    });
+    document.querySelectorAll('[data-eraser-mode]').forEach((button) => {
+      button.addEventListener('click', () => this.setTool(`eraser-${button.dataset.eraserMode}`));
+    });
+    document.querySelectorAll('[data-eraser-size]').forEach((slider) => {
+      slider.addEventListener('input', () => {
+        this.eraserRadius = Number(slider.value);
+        document.querySelectorAll('[data-eraser-size]').forEach((el) => { el.value = String(this.eraserRadius); });
+        document.querySelectorAll('[data-eraser-size-label]').forEach((el) => { el.textContent = `${this.eraserRadius} px`; });
       });
     });
     this.setTool(this.activeTool);
@@ -1901,6 +1951,20 @@ class NestedCanvasApp {
       });
     }
 
+    document.getElementById('btn-insert-pdf')?.addEventListener('click', () => {
+      if (window.Capacitor?.isNativePlatform() && window.Capacitor.getPlatform() === 'android') {
+        this.insertPdfFile(null, null, true);
+        return;
+      }
+      const input = document.getElementById('pdf-file-input');
+      input.value = '';
+      input.click();
+    });
+    document.getElementById('pdf-file-input')?.addEventListener('change', (event) => {
+      const file = event.target.files?.[0];
+      if (file) this.insertPdfFile(file);
+    });
+
     // Dán ảnh từ Clipboard (Ctrl+V)
     window.addEventListener('paste', (e) => {
       const items = e.clipboardData?.items;
@@ -1928,6 +1992,10 @@ class NestedCanvasApp {
           return;
         }
         const screenPos = new Vec2(e.clientX, e.clientY);
+        if (lower.endsWith('.pdf')) {
+          this.insertPdfFile(file, screenPos);
+          return;
+        }
         const hit = this.hitTestBoard(screenPos);
         const targetNode = hit && hit.action === 'body' ? hit.node : this.scene.root;
         this.insertImageFile(file, targetNode, screenPos);
@@ -1938,6 +2006,7 @@ class NestedCanvasApp {
     document.getElementById('btn-export-png').addEventListener('click', () => {
       this.exportPNG();
     });
+    document.getElementById('btn-export-pdf')?.addEventListener('click', () => this.exportPDF());
 
     // Khởi tạo Modal Canvas Viết Tay Nhận Dạng Toán Học (Math OCR)
     this.initMathOCRModal();
@@ -1988,6 +2057,11 @@ class NestedCanvasApp {
 
   toggleMultiPointMode(forcedState = null) {
     this.isMultiPointMode = forcedState !== null ? forcedState : !this.isMultiPointMode;
+    this.isPinching = false;
+    this.touchGestureMode = null;
+    this.initialPinchDistance = null;
+    this.initialPinchCenterWorld = null;
+    this.justFinishedPinching = null;
 
     const btnLeft = document.getElementById('tool-multipoint');
     const btnBottom = document.getElementById('btn-toggle-multipoint');
@@ -2022,39 +2096,39 @@ class NestedCanvasApp {
   }
 
   setTool(tool) {
+    if (tool === 'eraser') tool = `eraser-${this.eraserMode || 'segment'}`;
     this.activeTool = tool;
     document.querySelectorAll('.tool-btn[data-tool]').forEach((b) => {
-      b.classList.toggle('active', b.dataset.tool === tool);
+      b.classList.toggle('active', b.dataset.tool === tool || (b.dataset.tool === 'eraser' && tool.startsWith('eraser-')));
     });
 
     const isPen = (tool === 'pen');
 
-    // Thanh màu & thanh công cụ nét bút dưới đáy chỉ hiện ra khi chọn bút
+    const isEraser = tool.startsWith('eraser');
+    if (isEraser) this.eraserMode = tool.slice('eraser-'.length);
     const bottomBar = document.getElementById('bottom-bar');
     if (bottomBar) {
-      if (isPen) {
-        bottomBar.style.display = 'flex';
-        bottomBar.classList?.remove('hidden-bar');
-        const brushElements = bottomBar.querySelectorAll('.brush-types, .color-palette, .size-slider-wrapper');
-        brushElements.forEach((el) => {
-          el.style.opacity = '1';
-          el.style.pointerEvents = 'auto';
-        });
-      } else {
-        bottomBar.style.display = 'none';
-        bottomBar.classList?.add('hidden-bar');
-      }
+      bottomBar.style.display = isPen || isEraser ? 'flex' : 'none';
+      bottomBar.classList?.toggle('hidden-bar', !isPen && !isEraser);
+      bottomBar.querySelectorAll('.brush-picker, .color-palette, .size-slider-wrapper:not(.eraser-size-wrapper), .divider, #btn-toggle-multipoint').forEach((el) => {
+        el.hidden = !isPen;
+      });
     }
+    document.querySelectorAll('.eraser-controls').forEach((el) => { el.hidden = !isEraser; });
+    document.querySelectorAll('[data-eraser-mode]').forEach((el) => {
+      const active = isEraser && el.dataset.eraserMode === this.eraserMode;
+      el.classList.toggle('active', active);
+      el.setAttribute('aria-pressed', String(active));
+    });
 
-    // Thanh màu trên giao diện điện thoại (mobile-single-board-ui)
     const mobilePaletteDrawer = document.getElementById('mobile-palette-drawer');
     if (mobilePaletteDrawer) {
       mobilePaletteDrawer.style.display = isPen ? 'flex' : 'none';
-      if (isPen) {
-        mobilePaletteDrawer.classList?.remove('hidden-bar');
-      } else {
-        mobilePaletteDrawer.classList?.add('hidden-bar');
-      }
+      mobilePaletteDrawer.classList?.toggle('hidden-bar', !isPen);
+    }
+    for (const id of ['mobile-tool-brush-toggle', 'mobile-btn-palette-toggle']) {
+      const button = document.getElementById(id);
+      if (button) button.hidden = !isPen;
     }
 
     // Cập nhật trạng thái active của các nút công cụ mobile
@@ -2110,6 +2184,51 @@ class NestedCanvasApp {
     if (input) {
       input.value = '';
       input.click();
+    }
+  }
+
+  async insertPdfFile(file, screenPos = null, useNativePicker = false) {
+    if (!useNativePicker && (!file || (!file.name?.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf'))) return;
+    if (this.isImportingPdf) return;
+    this.isImportingPdf = true;
+    const button = document.getElementById('btn-insert-pdf');
+    if (button) button.disabled = true;
+    try {
+      if (button) button.textContent = '📄 Đang mở PDF…';
+      let document;
+      if (useNativePicker) {
+        const { pickNativePdf } = await import('./storage/nativePdfImporter.js');
+        document = await pickNativePdf();
+        if (!document) return;
+      } else {
+        const { openPdfFile } = await import('./storage/pdfImporter.js');
+        document = await openPdfFile(file);
+      }
+      const center = this.camera.screenToWorld(screenPos || new Vec2(window.innerWidth / 2, window.innerHeight / 2));
+      const name = (document.name || 'PDF').replace(/\.pdf$/i, '');
+      const page = document.page;
+      const width = 650;
+      const height = width * page.height / page.width;
+      const node = new CanvasNode(`📄 ${name} · 1/${document.pageCount}`, width, height,
+        Transform2D.fromTranslation(center.x - width / 2, center.y - height / 2), page.src);
+      node.pdfData = {
+        name, source: document.source, pageCount: document.pageCount, pageIndex: 0,
+      };
+      this.executeCommand(new CreateNodeCommand(this.scene.root.id, node), this.scene.root.id);
+      this.selectedNodeId = node.id;
+      this.updateUI();
+      this.requestRender();
+      this.broadcastCanvasMirror();
+      this.showToast(`📄 Đã mở PDF · ${document.pageCount} trang. Bấm ‹ / › để chuyển trang.`, 3500);
+    } catch (error) {
+      console.error('[PDF Import] Error:', error);
+      this.showToast(`❌ Không nhập được PDF: ${error.message}`, 5000);
+    } finally {
+      this.isImportingPdf = false;
+      if (button) {
+        button.disabled = false;
+        button.textContent = '📄 Chèn PDF';
+      }
     }
   }
 
@@ -2188,11 +2307,213 @@ class NestedCanvasApp {
     reader.readAsDataURL(file);
   }
 
+  // Helper checks for touch targets
+  isInteractiveUI(target) {
+    if (!target) return false;
+    const tag = (target.tagName || '').toUpperCase();
+    if (['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'A'].includes(tag)) return true;
+    if (typeof target.closest === 'function') {
+      return !!target.closest(
+        'button, input, select, textarea, a, .top-bar, .left-toolbar, .bottom-bar, .mobile-toolbar, .glass-panel, .modal, .popover, [role="dialog"], #graph-expressions-section, .color-palette, .size-slider-wrapper, .brush-picker, .bottom-right-hud'
+      );
+    }
+    return false;
+  }
+
+  isCanvasTarget(target) {
+    if (!target) return true;
+    if (this.isInteractiveUI(target)) return false;
+    if (this.canvas) {
+      if (target === this.canvas) return true;
+      if (typeof target.closest === 'function') {
+        if (target.closest('#canvas, #canvas-container, #video-overlays, #app, body')) return true;
+      }
+      if (typeof this.canvas.contains === 'function' && this.canvas.contains(target)) return true;
+      const container = typeof document !== 'undefined' ? document.getElementById('canvas-container') : null;
+      if (container && typeof container.contains === 'function' && container.contains(target)) return true;
+      if (target.id === 'canvas' || target.id === 'canvas-container' || target.id === 'video-overlays' || target.id === 'app' || target.tagName === 'BODY') return true;
+      return false;
+    }
+    return true;
+  }
+
   // --- CỬ CHỈ CẢM ỨNG NATIVE 2 NGÓN TAY (NATIVE PINCH-TO-ZOOM & TWO-FINGER PAN) ---
+  handleMultiTouch(e, phase) {
+    if (e.cancelable) e.preventDefault();
+    if (!this.useNativeMultiTouch) return;
+    for (const touch of Array.from(e.changedTouches || [])) {
+      if (!this.isCanvasTarget(touch.target)) continue;
+      const id = `touch:${touch.identifier}`;
+      if (phase === 'start') {
+        const screenPos = new Vec2(touch.clientX, touch.clientY);
+        const hit = this.getPenHit(screenPos);
+        this.selectPdfForPen(hit);
+        const targetNode = hit?.node?.pdfData && hit.action === 'image-body' ? hit.node : this.scene.root;
+        const localPt = this.scene.screenToLocal(screenPos, targetNode.id, this.camera);
+        const pressure = touch.force > 0 ? touch.force : 0.8;
+        const newSession = {
+          pointerId: id,
+          targetNodeId: targetNode.id,
+          pdfPageIndex: targetNode.pdfData?.pageIndex ?? null,
+          rawPoints: [new Point2D(localPt.x, localPt.y, pressure)],
+          color: this.brushColor,
+          baseWidth: this.brushSize,
+          brushType: this.brushType,
+          getSmoothedPoints() {
+            return CatmullRomSpline.smooth(this.rawPoints, 4);
+          },
+        };
+        this.activeSessions.set(id, newSession);
+        this.requestRender();
+        if (this.syncClient?.isConnected) {
+          this.syncClient.send('CANVAS_STROKE_LIVE', {
+            clientId: `${this.clientId}_${id}`,
+            pageIndex: this.currentPageIndex,
+            session: {
+              targetNodeId: newSession.targetNodeId,
+              pdfPageIndex: newSession.pdfPageIndex,
+              points: newSession.rawPoints.map(p => ({ x: p.x, y: p.y, pressure: p.pressure })),
+              color: newSession.color,
+              baseWidth: newSession.baseWidth,
+              brushType: newSession.brushType,
+              isDelta: false,
+            },
+          });
+        }
+      } else if (phase === 'move') {
+        const session = this.activeSessions.get(id);
+        if (session) {
+          const screenPos = new Vec2(touch.clientX, touch.clientY);
+          const localPt = this.scene.screenToLocal(screenPos, session.targetNodeId, this.camera);
+          const lastPt = session.rawPoints[session.rawPoints.length - 1];
+          if (!lastPt || lastPt.distanceTo(localPt) > 1.5) {
+            const pressure = touch.force > 0 ? touch.force : 0.8;
+            session.rawPoints.push(new Point2D(localPt.x, localPt.y, pressure));
+            this.requestRender();
+
+            if (this.syncClient && this.syncClient.isConnected) {
+              const now = performance.now();
+              if (!session._lastLiveSync || now - session._lastLiveSync >= 16) {
+                session._lastLiveSync = now;
+                const smoothed = session.getSmoothedPoints ? session.getSmoothedPoints() : session.rawPoints;
+                const lastSentIdx = session._lastLiveSyncIdx || 0;
+                const deltaPoints = smoothed.slice(lastSentIdx);
+                session._lastLiveSyncIdx = smoothed.length;
+                if (deltaPoints.length > 0) {
+                  this.syncClient.send('CANVAS_STROKE_LIVE', {
+                    clientId: `${this.clientId}_${id}`,
+                    session: {
+                      targetNodeId: session.targetNodeId,
+                      pdfPageIndex: session.pdfPageIndex,
+                      points: deltaPoints.map(p => ({ x: p.x, y: p.y, pressure: p.pressure })),
+                      isDelta: lastSentIdx > 0,
+                      color: session.color,
+                      baseWidth: session.baseWidth,
+                      brushType: session.brushType,
+                    },
+                    pageIndex: this.currentPageIndex,
+                    sendTime: Date.now(),
+                  });
+                }
+              }
+            }
+          }
+        }
+      } else if (phase === 'end') {
+        const session = this.activeSessions.get(id);
+        if (session) {
+          const smoothed = session.getSmoothedPoints ? session.getSmoothedPoints() : session.rawPoints;
+          if (smoothed.length >= 1) {
+            const stroke = new Stroke(
+              smoothed,
+              session.color,
+              session.baseWidth,
+              session.brushType
+            );
+            const cmd = new AddStrokeCommand(session.targetNodeId, stroke, session.pdfPageIndex);
+            this.executeCommand(cmd, session.targetNodeId);
+
+            if (this.syncClient && this.syncClient.isConnected) {
+              this.syncClient.send('CANVAS_STROKE_LIVE', {
+                clientId: `${this.clientId}_${id}`,
+                session: null,
+              });
+              this.syncClient.send('CANVAS_STROKE_ADD', {
+                targetNodeId: session.targetNodeId,
+                nodeId: session.targetNodeId,
+                pdfPageIndex: session.pdfPageIndex,
+                stroke: stroke.toJSON ? stroke.toJSON() : stroke,
+                pageIndex: this.currentPageIndex,
+              });
+            }
+          }
+          this.activeSessions.delete(id);
+          this.requestRender();
+          this.scheduleContentSave?.();
+        }
+      } else if (phase === 'cancel') {
+        const session = this.activeSessions.get(id);
+        if (session) {
+          if (session.rawPoints.length > 1) {
+            const smoothed = session.getSmoothedPoints ? session.getSmoothedPoints() : session.rawPoints;
+            const stroke = new Stroke(
+              smoothed,
+              session.color,
+              session.baseWidth,
+              session.brushType
+            );
+            const cmd = new AddStrokeCommand(session.targetNodeId, stroke, session.pdfPageIndex);
+            this.executeCommand(cmd, session.targetNodeId);
+          }
+          if (this.syncClient && this.syncClient.isConnected) {
+            this.syncClient.send('CANVAS_STROKE_LIVE', {
+              clientId: `${this.clientId}_${id}`,
+              session: null,
+            });
+          }
+          this.activeSessions.delete(id);
+          this.requestRender();
+        }
+      }
+    }
+  }
+
   onTouchStart(e) {
-    if (this.isMultiPointMode) return;
-    if (e.touches && e.touches.length >= 2) {
+    if (this.isInteractiveUI(e.target)) return;
+    if (this.isMultiPointMode) {
+      this.handleMultiTouch(e, 'start');
+      return;
+    }
+    const touches = Array.from(e.touches || []).filter(touch => this.isCanvasTarget(touch.target));
+    if (this.touchGestureMode === 'erase3') {
+      this.onTouchMove(e);
+      return;
+    }
+    if (touches.length >= 3) {
       if (e.cancelable) e.preventDefault();
+      this.touchGestureMode = 'erase3';
+      this._erase3Lifting = false;
+      this.isPinching = false;
+      if (this.activeSessions.size > 0) {
+        for (const [pid] of this.activeSessions.entries()) {
+          if (this.syncClient && this.syncClient.isConnected) {
+            this.syncClient.send('CANVAS_STROKE_LIVE', {
+              clientId: `${this.clientId}_${pid}`,
+              session: null,
+            });
+          }
+        }
+        this.activeSessions.clear();
+      }
+      this.isDragging = false;
+      this.isPanning = false;
+      this.isPanningChild = false;
+      this.onTouchMove(e);
+      return;
+    }
+    if (touches.length >= 2) {
+      if (e.cancelable) e.preventDefault();
+      this.touchGestureMode = null;
       this.isPinching = true;
 
       // Xóa và hủy bỏ các nét vẽ dở của 2 ngón tay vừa chạm
@@ -2211,8 +2532,8 @@ class NestedCanvasApp {
       this.isPanning = false;
       this.isPanningChild = false;
 
-      const t0 = e.touches[0];
-      const t1 = e.touches[1];
+      const t0 = touches[0];
+      const t1 = touches[1];
       this.initialPinchDistance = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
       this.initialPinchZoom = this.camera.zoom;
       const midScreen = new Vec2((t0.clientX + t1.clientX) * 0.5, (t0.clientY + t1.clientY) * 0.5);
@@ -2221,11 +2542,41 @@ class NestedCanvasApp {
   }
 
   onTouchMove(e) {
-    if (this.isMultiPointMode) return;
-    if (e.touches && e.touches.length >= 2) {
+    if (this.isInteractiveUI(e.target)) return;
+    if (this.isMultiPointMode) {
+      this.handleMultiTouch(e, 'move');
+      return;
+    }
+    const touches = Array.from(e.touches || []).filter(touch => this.isCanvasTarget(touch.target));
+    if (this.touchGestureMode === 'erase3') {
       if (e.cancelable) e.preventDefault();
-      const t0 = e.touches[0];
-      const t1 = e.touches[1];
+      if (this._erase3Lifting || touches.length < 3) return;
+      const midX = (touches[0].clientX + touches[1].clientX + touches[2].clientX) / 3;
+      const midY = (touches[0].clientY + touches[1].clientY + touches[2].clientY) / 3;
+      const center = new Vec2(midX, midY);
+      const hit = this.hitTestBoard ? this.hitTestBoard(center) : null;
+      const targetNode = hit && hit.action === 'body' ? hit.node : (hit ? hit.node : this.scene.root);
+      const mode = 'eraser-' + (this.eraserMode || 'segment');
+
+      const spanDist = Math.max(
+        Math.hypot(touches[0].clientX - midX, touches[0].clientY - midY),
+        Math.hypot(touches[1].clientX - midX, touches[1].clientY - midY),
+        Math.hypot(touches[2].clientX - midX, touches[2].clientY - midY)
+      );
+      const spanRadius = Math.max(this.eraserRadius * 2, spanDist + this.eraserRadius, 45);
+
+      this.performErase(center, targetNode, mode, spanRadius);
+      if (targetNode !== this.scene.root) {
+        this.performErase(center, this.scene.root, mode, spanRadius);
+      }
+      this.eraserCursor = { x: midX, y: midY, radius: spanRadius };
+      this.requestRender();
+      return;
+    }
+    if (touches.length >= 2) {
+      if (e.cancelable) e.preventDefault();
+      const t0 = touches[0];
+      const t1 = touches[1];
       const curDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
       const curMidScreen = new Vec2((t0.clientX + t1.clientX) * 0.5, (t0.clientY + t1.clientY) * 0.5);
 
@@ -2248,7 +2599,27 @@ class NestedCanvasApp {
   }
 
   onTouchEnd(e) {
-    if (!e.touches || e.touches.length < 2) {
+    if (this.isInteractiveUI(e.target)) return;
+    if (this.isMultiPointMode) {
+      this.handleMultiTouch(e, 'end');
+      return;
+    }
+    const touches = Array.from(e.touches || []).filter(touch => this.isCanvasTarget(touch.target));
+    if (this.touchGestureMode === 'erase3') {
+      if (touches.length === 0) {
+        this.finishEraseSession?.();
+        this.touchGestureMode = null;
+        this._erase3Lifting = false;
+        this.eraserCursor = null;
+        this.justFinishedPinching = Date.now();
+        this.requestRender();
+        this.scheduleContentSave?.();
+      } else {
+        this._erase3Lifting = true;
+      }
+      return;
+    }
+    if (touches.length < 2) {
       if (this.isPinching) {
         this.justFinishedPinching = Date.now();
         // Lưu trạng thái sau khi kết thúc pinch (không phải mỗi frame)
@@ -2260,10 +2631,23 @@ class NestedCanvasApp {
     }
   }
 
+  onTouchCancel(e) {
+    if (this.isInteractiveUI(e.target)) return;
+    if (this.isMultiPointMode) {
+      this.handleMultiTouch(e, 'cancel');
+      return;
+    }
+    this.onTouchEnd(e);
+  }
+
   onPointerDown(e) {
+    if (this.isMultiPointMode && this.useNativeMultiTouch && e.pointerType === 'touch') {
+      return;
+    }
     if (this.awaitingSessionChoice) return;
-    // Nếu đang trong cử chỉ 2 ngón tay hoặc vừa thả tay sau khi pinch, bỏ qua không tạo nét vẽ
-    if (this.isPinching || (!this.isMultiPointMode && this.justFinishedPinching && (Date.now() - this.justFinishedPinching < 300))) {
+    if (e.pointerType === 'touch' && this.touchGestureMode === 'erase3') return;
+    // Nếu đang trong cử chỉ 2 ngón tay hoặc vừa thả tay sau khi pinch, bỏ qua không tạo nét vẽ (chỉ áp dụng khi KHÔNG ở chế độ vẽ đa điểm)
+    if (!this.isMultiPointMode && (this.isPinching || this.touchGestureMode || (this.justFinishedPinching && (Date.now() - this.justFinishedPinching < 300)))) {
       return;
     }
 
@@ -2272,13 +2656,22 @@ class NestedCanvasApp {
       return;
     }
 
+    if (e.cancelable && (this.activeTool === 'pen' || this.isMultiPointMode)) {
+      e.preventDefault();
+    }
+    try {
+      this.canvas?.setPointerCapture?.(e.pointerId);
+    } catch (_) {}
+
     const screenPos = new Vec2(e.clientX, e.clientY);
     this.lastPointerScreen = screenPos;
-    this.activePointers.set(e.pointerId, screenPos);
+    if (this.activePointers) {
+      this.activePointers.set(e.pointerId, screenPos);
+    }
 
     // Chạm 2 ngón tay trên màn hình cảm ứng: Chuyển sang cử chỉ Phóng to/Thu nhỏ (Pinch Zoom) + Di chuyển 2 ngón (Pan)
     // CHỈ kích hoạt Pinch Zoom khi KHÔNG ở chế độ vẽ đa điểm
-    if (!this.isMultiPointMode && this.activePointers.size >= 2) {
+    if (!this.isMultiPointMode && this.activePointers && this.activePointers.size >= 2) {
       this.isPinching = true;
       this.activeSessions.clear();
       this.isDragging = false;
@@ -2315,8 +2708,11 @@ class NestedCanvasApp {
       return;
     }
 
-    if (e.button === 0) {
-      const hit = this.hitTestBoard(screenPos);
+    if (e.button === 0 || e.pointerType === 'touch') {
+      const rawHit = this.getPenHit(screenPos);
+      const hit = this.isMultiPointMode && e.pointerType === 'touch' && this.activeTool === 'pen'
+        ? (rawHit?.node?.pdfData && rawHit.action === 'image-body' ? rawHit : null)
+        : rawHit;
 
       // 1. Nút Đóng / Xóa đối tượng [✕]
       if (hit && hit.action === 'close') {
@@ -2348,6 +2744,12 @@ class NestedCanvasApp {
           ty: hit.node.transform.ty,
         };
         this.resizeInitialStrokes = hit.node.elements ? hit.node.elements.map((s) => s.clone()) : [];
+        if (hit.node.pdfData) {
+          hit.node.setPdfPageStrokes(hit.node.pdfData.pageIndex, hit.node.elements);
+          this.resizeInitialPdfPages = JSON.parse(JSON.stringify(hit.node.pdfData.annotationPages));
+        } else {
+          this.resizeInitialPdfPages = null;
+        }
         this.canvas.style.cursor = `${hit.handle}-resize`;
         return;
       }
@@ -2391,15 +2793,18 @@ class NestedCanvasApp {
         return;
       }
 
-      // 6. CÔNG CỤ BÚT VẼ (PEN TOOL) - Luôn vẽ trực tiếp lên Infinite Canvas mẹ!
+      // 6. Draw inside a PDF page when the pointer starts on it.
       if (this.activeTool === 'pen') {
-        const localPt = this.scene.screenToLocal(screenPos, this.scene.root.id, this.camera);
+        this.selectPdfForPen(hit);
+        const targetNode = hit?.node?.pdfData && hit.action === 'image-body' ? hit.node : this.scene.root;
+        const localPt = this.scene.screenToLocal(screenPos, targetNode.id, this.camera);
         this.updateHierarchyTree();
         this.updateNodeProperties();
 
         const newSession = {
           pointerId: e.pointerId,
-          targetNodeId: this.scene.root.id,
+          targetNodeId: targetNode.id,
+          pdfPageIndex: targetNode.pdfData?.pageIndex ?? null,
           rawPoints: [new Point2D(localPt.x, localPt.y, (e.pressure > 0 ? e.pressure : 0.8))],
           color: this.brushColor,
           baseWidth: this.brushSize,
@@ -2416,6 +2821,7 @@ class NestedCanvasApp {
             pageIndex: this.currentPageIndex,
             session: {
               targetNodeId: newSession.targetNodeId,
+              pdfPageIndex: newSession.pdfPageIndex,
               points: newSession.rawPoints.map(p => ({ x: p.x, y: p.y, pressure: p.pressure })),
               color: newSession.color,
               baseWidth: newSession.baseWidth,
@@ -2430,7 +2836,8 @@ class NestedCanvasApp {
       // 7. CÔNG CỤ TẨY (ERASER TOOL - OBJECT & SEGMENT)
       if (this.activeTool.startsWith('eraser')) {
         this.isErasing = true;
-        this.performErase(screenPos, this.scene.root);
+        const targetNode = hit?.node?.pdfData && hit.action === 'image-body' ? hit.node : this.scene.root;
+        this.performErase(screenPos, targetNode);
         return;
       }
 
@@ -2450,8 +2857,13 @@ class NestedCanvasApp {
   }
 
   onPointerMove(e) {
+    if (this.isMultiPointMode && this.useNativeMultiTouch && e.pointerType === 'touch') {
+      return;
+    }
+    if (e.target && !this.isCanvasTarget(e.target) && !this.activePointers?.has(e.pointerId) && !this.activeSessions?.has(e.pointerId)) return;
     const screenPos = new Vec2(e.clientX, e.clientY);
-    const delta = screenPos.sub(this.lastPointerScreen);
+    const prevPos = this.activePointers?.get(e.pointerId) || this.lastPointerScreen || screenPos;
+    const delta = screenPos.sub(prevPos);
     this.lastPointerScreen = screenPos;
 
     // Luôn cập nhật vị trí ngón tay TRƯỚC — kể cả khi đang pinch
@@ -2460,9 +2872,11 @@ class NestedCanvasApp {
       this.activePointers.set(e.pointerId, screenPos);
     }
 
-    if (this.isPinching) {
+    if (e.pointerType === 'touch' && this.touchGestureMode === 'erase3') return;
+
+    if (!this.isMultiPointMode && this.isPinching) {
       // Trong chế độ pinch: chỉ xử lý zoom/pan, bỏ qua mọi thứ khác
-      if (!this.isMultiPointMode && this.activePointers && this.activePointers.size >= 2) {
+      if (this.activePointers && this.activePointers.size >= 2) {
         if (!this.initialPinchDistance || !this.initialPinchCenterWorld) {
           const pts = Array.from(this.activePointers.values());
           if (pts.length >= 2) {
@@ -2586,7 +3000,21 @@ class NestedCanvasApp {
       }
 
       // Tự động co giãn tỉ lệ các nét vẽ trên ảnh khi phóng to/thu nhỏ bảng ảnh
-      if (node.image && this.resizeInitialStrokes && this.resizeInitialStrokes.length > 0) {
+      if (node.pdfData && this.resizeInitialPdfPages) {
+        const scaleX = node.width / width;
+        const scaleY = node.height / height;
+        const scaleWidth = (scaleX + scaleY) * 0.5;
+        const scaledPages = {};
+        for (const [pageIndex, strokes] of Object.entries(this.resizeInitialPdfPages)) {
+          scaledPages[pageIndex] = strokes.map(stroke => ({
+            ...stroke,
+            baseWidth: stroke.baseWidth * scaleWidth,
+            points: stroke.points.map(pt => ({ ...pt, x: pt.x * scaleX, y: pt.y * scaleY })),
+          }));
+        }
+        node.pdfData.annotationPages = scaledPages;
+        node.elements = (scaledPages[node.pdfData.pageIndex] || []).map(stroke => Stroke.fromJSON(stroke));
+      } else if (node.image && this.resizeInitialStrokes && this.resizeInitialStrokes.length > 0) {
         const headerH = 28;
         const initBodyH = Math.max(1, height - headerH);
         const newBodyH = Math.max(1, node.height - headerH);
@@ -2673,6 +3101,7 @@ class NestedCanvasApp {
         session.rawPoints.push(
           new Point2D(localPt.x, localPt.y, (e.pressure > 0 ? e.pressure : 0.8))
         );
+        this.requestRender();
 
         // Phát sóng nét vẽ đang vẽ trực tiếp qua mạng LAN (Live Streaming)
         const targetId = session?.targetNodeId;
@@ -2691,6 +3120,7 @@ class NestedCanvasApp {
             if (deltaPoints.length > 0) {
               const strokeSession = {
                 targetNodeId: targetId,
+                pdfPageIndex: session.pdfPageIndex,
                 // Gửi full nếu lần đầu (để display có context), sau đó gửi delta
                 points: lastSentIdx === 0
                   ? smoothed.map((p) => ({ x: p.x, y: p.y, pressure: p.pressure }))
@@ -2735,7 +3165,8 @@ class NestedCanvasApp {
       this.eraserCursor = Array.from(this.eraserCursors.values());
       if (e.buttons === 1 || this.isErasing) {
         const hit = this.hitTestBoard(screenPos);
-        const targetNode = hit && hit.action === 'body' ? hit.node : (hit ? hit.node : this.scene.root);
+        const targetNode = hit && (hit.action === 'body' || (hit.node.pdfData && hit.action === 'image-body'))
+          ? hit.node : this.scene.root;
         if (targetNode) {
           this.performErase(screenPos, targetNode);
         }
@@ -2769,6 +3200,8 @@ class NestedCanvasApp {
   }
 
   onPointerUp(e) {
+    if (this.isMultiPointMode && this.useNativeMultiTouch && e.pointerType === 'touch') return;
+    if (e.target && !this.isCanvasTarget(e.target) && !this.activePointers?.has(e.pointerId) && !this.activeSessions?.has(e.pointerId)) return;
     if (e.pointerType === 'touch') {
       try { this.canvas.releasePointerCapture(e.pointerId); } catch (_) {}
     }
@@ -2779,10 +3212,13 @@ class NestedCanvasApp {
         if (this.initialPinchDistance) {
           this.justFinishedPinching = Date.now();
         }
+        this.isPinching = false;
         this.initialPinchDistance = null;
         this.initialPinchCenterWorld = null;
       }
     }
+
+    if (e.pointerType === 'touch' && this.touchGestureMode === 'erase3') return;
 
     if (this.eraserCursors) {
       this.eraserCursors.delete(e.pointerId);
@@ -2817,6 +3253,7 @@ class NestedCanvasApp {
       this.resizingNode = null;
       this.resizeHandle = null;
       this.resizeInitialStrokes = null;
+      this.resizeInitialPdfPages = null;
       this.broadcastCurrentCameraSync();
     }
 
@@ -2824,38 +3261,7 @@ class NestedCanvasApp {
       this.isErasing = false;
     }
 
-    if (this.activeEraseSession) {
-      const { nodeId, initialStrokes } = this.activeEraseSession;
-      const node = this.scene.getNode(nodeId);
-      if (node) {
-        const finalStrokes = [...node.elements];
-        this.history.execute(
-          new EraseCommand(nodeId, initialStrokes, finalStrokes),
-          this.scene
-        );
-        const sharedRoot = this.getSharedRootForNode(nodeId);
-        if (this.syncClient && this.syncClient.isConnected) {
-          const remainingIds = new Set(finalStrokes.map((s) => s.id));
-          const removedIds = initialStrokes.filter((s) => !remainingIds.has(s.id)).map((s) => s.id);
-          if (removedIds.length > 0) {
-            this.syncClient.send('CANVAS_STROKE_ERASE', {
-              nodeId,
-              removedStrokeIds: removedIds,
-            });
-            if (sharedRoot) {
-              this.syncClient.send('STROKE_ERASE', {
-                clientId: this.clientId,
-                boardId: sharedRoot.id,
-                nodeId,
-                removedStrokeIds: removedIds,
-              });
-            }
-          }
-        }
-      }
-      this.activeEraseSession = null;
-      this.updateHierarchyTree();
-    }
+    this.finishEraseSession();
 
     if (this.isDragging && this.draggingNode) {
       this.isDragging = false;
@@ -2913,7 +3319,7 @@ class NestedCanvasApp {
           session.baseWidth,
           session.brushType
         );
-        const cmd = new AddStrokeCommand(session.targetNodeId, stroke);
+        const cmd = new AddStrokeCommand(session.targetNodeId, stroke, session.pdfPageIndex);
         this.executeCommand(cmd, session.targetNodeId);
 
         const targetId = session.targetNodeId;
@@ -2923,6 +3329,7 @@ class NestedCanvasApp {
           const streamClientId = `${this.clientId}_${e.pointerId}`;
           this.syncClient.send('CANVAS_STROKE_ADD', {
             nodeId: targetId,
+            pdfPageIndex: session.pdfPageIndex,
             stroke: stroke.toJSON(),
             clientId: streamClientId,
             pageIndex: this.currentPageIndex,
@@ -2938,6 +3345,7 @@ class NestedCanvasApp {
               clientId: streamClientId,
               boardId: sharedRoot.id,
               nodeId: targetId,
+              pdfPageIndex: session.pdfPageIndex,
               stroke: stroke.toJSON(),
             });
           }
@@ -2946,6 +3354,24 @@ class NestedCanvasApp {
       this.activeSessions.delete(e.pointerId);
       this.updateHierarchyTree();
     }
+  }
+
+  getPenHit(screenPos) {
+    const hit = this.hitTestBoard(screenPos);
+    if (this.activeTool !== 'pen' || !hit?.node?.pdfData) return hit;
+    const point = hit.localPt || this.scene.screenToLocal(screenPos, hit.node.id, this.camera);
+    if (point.x >= 0 && point.x <= hit.node.width && point.y >= 0 && point.y <= hit.node.height) {
+      return { ...hit, action: 'image-body' };
+    }
+    return hit;
+  }
+
+  selectPdfForPen(hit) {
+    if (!hit?.node?.pdfData || hit.action !== 'image-body' || this.selectedNodeId === hit.node.id) return;
+    this.selectedNodeId = hit.node.id;
+    this.updateHierarchyTree();
+    this.updateNodeProperties();
+    this.requestRender();
   }
 
   hitTestBoard(screenPos) {
@@ -3198,7 +3624,7 @@ class NestedCanvasApp {
 
   clearBoard(node) {
     if (node.elements.length === 0 && (!node.images || node.images.length === 0)) return;
-    const cmd = new EraseCommand(node.id, [...node.elements], []);
+    const cmd = new EraseCommand(node.id, [...node.elements], [], node.pdfData?.pageIndex ?? null);
     this.executeCommand(cmd, node.id);
     this.updateHierarchyTree();
     this.updateNodeProperties();
@@ -3206,6 +3632,8 @@ class NestedCanvasApp {
       this.syncClient.send('NODE_CLEAR', {
         clientId: this.clientId,
         nodeId: node.id,
+        pdfPageIndex: node.pdfData?.pageIndex ?? null,
+        pageIndex: this.currentPageIndex,
       });
     }
   }
@@ -3240,24 +3668,106 @@ class NestedCanvasApp {
     this.scheduleContentSave();
   }
 
-  performErase(screenPos, node) {
+  performErase(screenPos, node, mode = null, customRadius = null) {
     if (!node) return;
     const localPt = this.scene.screenToLocal(screenPos, node.id, this.camera);
     const screenT = this.scene.computeContentScreenTransform(node.id, this.camera);
     const screenScale = Math.hypot(screenT.a, screenT.b) || 1.0;
-    const localRadius = this.eraserRadius / screenScale;
+    const radiusToUse = customRadius != null ? customRadius : this.eraserRadius;
+    const localRadius = radiusToUse / screenScale;
 
-    if (!this.activeEraseSession) {
-      this.activeEraseSession = {
-        nodeId: node.id,
-        initialStrokes: [...node.elements],
-      };
+    if (!this.activeEraseSessions) {
+      this.activeEraseSessions = new Map();
     }
+    if (!this.activeEraseSessions.has(node.id)) {
+      this.activeEraseSessions.set(node.id, {
+        nodeId: node.id,
+        pdfPageIndex: node.pdfData?.pageIndex ?? null,
+        initialStrokes: [...node.elements],
+      });
+    }
+    this.activeEraseSession = this.activeEraseSessions.get(node.id);
 
-    if (this.activeTool === 'eraser-object') {
+    const activeMode = mode || this.activeTool;
+    if (activeMode === 'eraser-object') {
       EraserEngine.eraseObjectInNode(node, localPt, localRadius);
-    } else if (this.activeTool === 'eraser-segment') {
+    } else if (activeMode === 'eraser-segment') {
       EraserEngine.eraseSegmentInNode(node, localPt, localRadius);
+    }
+    if (node.pdfData) node.setPdfPageStrokes(node.pdfData.pageIndex, node.elements);
+  }
+
+  finishEraseSession() {
+    if (this.activeEraseSessions && this.activeEraseSessions.size > 0) {
+      for (const [nodeId, session] of this.activeEraseSessions.entries()) {
+        const node = this.scene.getNode(nodeId);
+        if (node) {
+          const finalStrokes = [...node.elements];
+          this.history.execute(
+            new EraseCommand(nodeId, session.initialStrokes, finalStrokes, session.pdfPageIndex),
+            this.scene
+          );
+          const sharedRoot = this.getSharedRootForNode(nodeId);
+          if (this.syncClient && this.syncClient.isConnected) {
+            const remainingIds = new Set(finalStrokes.map((s) => s.id));
+            const removedIds = session.initialStrokes.filter((s) => !remainingIds.has(s.id)).map((s) => s.id);
+            if (removedIds.length > 0) {
+              this.syncClient.send('CANVAS_STROKE_ERASE', {
+                nodeId,
+                pdfPageIndex: session.pdfPageIndex,
+                pageIndex: this.currentPageIndex,
+                removedStrokeIds: removedIds,
+              });
+              if (sharedRoot) {
+                this.syncClient.send('STROKE_ERASE', {
+                  clientId: this.clientId,
+                  boardId: sharedRoot.id,
+                  nodeId,
+                  pdfPageIndex: session.pdfPageIndex,
+                  removedStrokeIds: removedIds,
+                });
+              }
+            }
+          }
+        }
+      }
+      this.activeEraseSessions.clear();
+      this.activeEraseSession = null;
+      this.updateHierarchyTree();
+    } else if (this.activeEraseSession) {
+      const { nodeId, initialStrokes } = this.activeEraseSession;
+      const node = this.scene.getNode(nodeId);
+      if (node) {
+        const finalStrokes = [...node.elements];
+        this.history.execute(
+          new EraseCommand(nodeId, initialStrokes, finalStrokes, this.activeEraseSession.pdfPageIndex),
+          this.scene
+        );
+        const sharedRoot = this.getSharedRootForNode(nodeId);
+        if (this.syncClient && this.syncClient.isConnected) {
+          const remainingIds = new Set(finalStrokes.map((s) => s.id));
+          const removedIds = initialStrokes.filter((s) => !remainingIds.has(s.id)).map((s) => s.id);
+          if (removedIds.length > 0) {
+            this.syncClient.send('CANVAS_STROKE_ERASE', {
+              nodeId,
+              pdfPageIndex: this.activeEraseSession.pdfPageIndex,
+              pageIndex: this.currentPageIndex,
+              removedStrokeIds: removedIds,
+            });
+            if (sharedRoot) {
+            this.syncClient.send('STROKE_ERASE', {
+              clientId: this.clientId,
+              boardId: sharedRoot.id,
+              nodeId,
+              pdfPageIndex: this.activeEraseSession.pdfPageIndex,
+              removedStrokeIds: removedIds,
+              });
+            }
+          }
+        }
+      }
+      this.activeEraseSession = null;
+      this.updateHierarchyTree();
     }
   }
 
@@ -3346,7 +3856,7 @@ class NestedCanvasApp {
     } else if (e.key.toLowerCase() === 'o') {
       this.setTool('ocr');
     } else if (e.key.toLowerCase() === 'e') {
-      this.setTool(e.shiftKey ? 'eraser-segment' : 'eraser-object');
+      this.setTool(e.shiftKey ? 'eraser-segment' : 'eraser');
     } else if (e.key.toLowerCase() === 'm') {
       this.toggleMultiPointMode();
     } else if (e.key.toLowerCase() === 'f' && !e.ctrlKey && !e.metaKey && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
@@ -3529,6 +4039,31 @@ class NestedCanvasApp {
     link.click();
   }
 
+  async exportPDF() {
+    const button = document.getElementById('btn-export-pdf');
+    if (button?.disabled) return;
+    if (button) button.disabled = true;
+    try {
+      await this.sessionStorageReady;
+      this.saveCurrentPage();
+      this.showToast('⏳ Đang tạo tài liệu PDF phân trang...', 2000);
+      const manager = this.sessionManager || new SessionManager();
+      const camera = { zoom: this.camera.zoom, pan: { x: this.camera.pan.x, y: this.camera.pan.y } };
+      const content = { scene: this.scene.toJSON(), camera, pages: this.pages };
+      const name = this.isSingleBoardMode
+        ? (this.currentSharingBoardNode?.name || 'Bai_giang')
+        : (manager.getCurrentSessionMeta()?.name || 'Bai_giang');
+      const exported = await manager.exportSessionPDF(manager.getCurrentSessionId(), null, content, name);
+      if (!exported) throw new Error('Không có trang nào để xuất');
+      this.showToast('📄 Đã xuất PDF thành công!', 3500);
+    } catch (err) {
+      console.error('[Export PDF] Error:', err);
+      this.showToast('❌ Lỗi khi xuất PDF: ' + err.message, 4000);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   updateUI() {
     this.updateZoomHUD();
     this.updateHierarchyTree();
@@ -3536,155 +4071,19 @@ class NestedCanvasApp {
   }
 
   extractYoutubeId(value) {
-    const raw = String(value || '').trim();
-    const match = raw.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([\w-]{11})/i);
-    return match ? match[1] : (/^[\w-]{11}$/.test(raw) ? raw : null);
+    return extractYoutubeId(this, value);
   }
 
   createYoutubeBoard() {
-    const input = window.prompt('Dán link YouTube hoặc mã video:');
-    const videoId = this.extractYoutubeId(input);
-    if (!videoId) {
-      if (input !== null) this.showToast('❌ Link YouTube không hợp lệ');
-      return;
-    }
-    const width = 720, height = 405;
-    const center = this.camera.screenToWorld(new Vec2(window.innerWidth / 2, window.innerHeight / 2));
-    const node = new CanvasNode(
-      'YouTube', width, height,
-      Transform2D.fromTranslation(center.x - width / 2, center.y - height / 2),
-      null, null, this.globalTheme || this.scene.root.style || 'chalkboard',
-      this.globalGrid || this.scene.root.gridType || 'grid'
-    );
-    node.youtubeData = { videoId, url: `https://www.youtube.com/watch?v=${videoId}` };
-    this.history.execute(new CreateNodeCommand(this.scene.root.id, node), this.scene);
-    this.selectedNodeId = node.id;
-    this.scheduleContentSave();
-    this.updateUI();
-    this.broadcastCanvasMirror();
-    this.showToast('▶ Đã thêm video YouTube vào bảng');
+    return createYoutubeBoard(this);
   }
 
   updateYoutubeOverlays() {
-    const host = document.getElementById('video-overlays');
-    if (!host) return;
-    const nodes = (this.scene.root.children || []).filter(node => node.youtubeData?.videoId);
-    const liveIds = new Set();
-    for (const node of nodes) {
-      const p0 = this.camera.worldToScreen(node.transform.transformPoint(new Vec2(0, 0)));
-      const p1 = this.camera.worldToScreen(node.transform.transformPoint(new Vec2(node.width, node.height)));
-      const left = Math.min(p0.x, p1.x), top = Math.min(p0.y, p1.y);
-      const width = Math.abs(p1.x - p0.x), height = Math.abs(p1.y - p0.y);
-      if (width < 12 || height < 12 || left > window.innerWidth || top > window.innerHeight || left + width < 0 || top + height < 0) continue;
-      liveIds.add(node.id);
-      let remote = host.querySelector(`[data-node-id="${node.id}"]`);
-      if (!remote) {
-        remote = document.createElement('div');
-        remote.dataset.nodeId = node.id;
-        remote.classList.add('youtube-remote');
-        remote.style.cssText = 'position:absolute; overflow:hidden; border-radius:8px; background:#111827; background-size:cover; background-position:center;';
-        remote.style.backgroundImage = `url(https://img.youtube.com/vi/${node.youtubeData.videoId}/hqdefault.jpg)`;
-        const label = document.createElement('div');
-        label.textContent = '▶ YouTube · phát trên Display';
-        label.style.cssText = 'position:absolute; left:12px; bottom:12px; padding:6px 10px; border-radius:6px; background:rgba(15,23,42,.86); color:#fff; font:600 12px Outfit,sans-serif;';
-        remote.appendChild(label);
-        const controls = document.createElement('div');
-        controls.style.cssText = 'position:absolute; left:12px; top:12px; display:flex; gap:6px;';
-        const actionLabels = {
-          play: 'Phát', pause: 'Tạm dừng', stop: 'Dừng', unmute: 'Bật âm thanh',
-          backward: 'Lùi 10 giây', forward: 'Tiến 10 giây', restart: 'Phát lại từ đầu',
-        };
-        label.setAttribute('role', 'status');
-        label.setAttribute('aria-live', 'polite');
-        let feedbackTimer;
-        [['▶', 'play'], ['Ⅱ', 'pause'], ['■', 'stop'], ['🔊', 'unmute'], ['−10', 'backward'], ['+10', 'forward'], ['↺', 'restart']].forEach(([text, action]) => {
-          const button = document.createElement('button');
-          button.type = 'button'; button.textContent = text;
-          button.title = actionLabels[action];
-          button.setAttribute('aria-label', actionLabels[action]);
-          button.className = 'youtube-control';
-          button.addEventListener('click', (event) => {
-            event.stopPropagation();
-            const sent = this.sendYoutubeControl(node.id, action);
-            controls.querySelectorAll('.youtube-control').forEach(control => {
-              control.classList.remove('is-sent', 'is-failed');
-            });
-            button.classList.add(sent ? 'is-sent' : 'is-failed');
-            label.textContent = sent
-              ? `✓ Đã gửi: ${actionLabels[action]}`
-              : '⚠ Chưa kết nối Display';
-            clearTimeout(feedbackTimer);
-            feedbackTimer = setTimeout(() => {
-              button.classList.remove('is-sent', 'is-failed');
-              label.textContent = '▶ YouTube · phát trên Display';
-            }, 1600);
-          });
-          controls.appendChild(button);
-        });
-        remote.appendChild(controls);
-        const close = document.createElement('button');
-        close.type = 'button';
-        close.dataset.deleteNodeId = node.id;
-        close.textContent = '✕';
-        close.title = 'Xóa video YouTube';
-        close.style.cssText = 'position:absolute; z-index:2; width:30px; height:30px; padding:0; border:1px solid rgba(255,255,255,.45); border-radius:50%; background:rgba(15,23,42,.92); color:#fff; font-size:16px; line-height:28px; cursor:pointer; touch-action:manipulation;';
-        close.addEventListener('click', (event) => {
-          event.stopPropagation();
-          this.deleteBoard(node.id);
-        });
-        remote.appendChild(close);
-        let drag = null;
-        remote.addEventListener('pointerdown', (event) => {
-          if (event.target.closest('button, details, summary')) return;
-          drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, tx: node.transform.tx, ty: node.transform.ty, initial: node.transform.clone() };
-          this.selectedNodeId = node.id;
-          remote.setPointerCapture?.(event.pointerId);
-          remote.classList.add('is-dragging');
-          event.preventDefault();
-        });
-        remote.addEventListener('pointermove', (event) => {
-          if (!drag || drag.pointerId !== event.pointerId) return;
-          node.transform.tx = drag.tx + (event.clientX - drag.startX) / this.camera.zoom;
-          node.transform.ty = drag.ty + (event.clientY - drag.startY) / this.camera.zoom;
-          this.requestRender();
-          if (this.syncClient?.isConnected) this.syncClient.send('NODE_TRANSFORM', {
-            clientId: this.clientId, nodeId: node.id, x: node.transform.tx, y: node.transform.ty,
-            w: node.width, h: node.height,
-          });
-        });
-        const finishDrag = (event) => {
-          if (!drag || drag.pointerId !== event.pointerId) return;
-          remote.releasePointerCapture?.(event.pointerId);
-          remote.classList.remove('is-dragging');
-          if (drag.tx !== node.transform.tx || drag.ty !== node.transform.ty) {
-            this.history.execute(new TransformNodeCommand(node.id, drag.initial, node.transform.clone()), this.scene);
-          }
-          this.scheduleContentSave();
-          drag = null;
-        };
-        remote.addEventListener('pointerup', finishDrag);
-        remote.addEventListener('pointercancel', finishDrag);
-        host.appendChild(remote);
-      }
-      remote.style.left = `${left}px`; remote.style.top = `${top}px`;
-      remote.style.width = `${width}px`; remote.style.height = `${height}px`;
-      remote.style.display = 'block';
-      const close = remote.querySelector(`[data-delete-node-id="${node.id}"]`);
-      if (close) {
-        close.style.right = '8px'; close.style.top = '8px';
-        close.style.display = 'block';
-      }
-    }
-    host.querySelectorAll('[data-node-id]').forEach(nodeEl => { if (!liveIds.has(nodeEl.dataset.nodeId)) nodeEl.remove(); });
+    return updateYoutubeOverlays(this);
   }
 
   sendYoutubeControl(nodeId, action) {
-    if (!this.syncClient || !this.syncClient.isConnected) {
-      this.showToast('⚠️ Chưa kết nối màn hình Display');
-      return false;
-    }
-    this.syncClient.send('YOUTUBE_CONTROL', { nodeId, action, sentAt: Date.now() });
-    return true;
+    return sendYoutubeControl(this, nodeId, action);
   }
 
   updateZoomHUD() {
@@ -5523,7 +5922,7 @@ class NestedCanvasApp {
     // 3. Nhận nét vẽ hoàn thành từ thiết bị khác
     this.syncClient.on('CANVAS_STROKE_ADD', (data) => {
       if (data.clientId && (data.clientId === this.clientId || data.clientId.startsWith(this.clientId + '_'))) return;
-      const { nodeId, stroke, clientId } = data;
+      const { nodeId, stroke, clientId, pdfPageIndex } = data;
       if (clientId) {
         this.remoteActiveSessions.delete(clientId);
       }
@@ -5531,9 +5930,11 @@ class NestedCanvasApp {
       const targetNode = (nodeId ? this.scene.getNode(nodeId) : null) || this.scene.root;
       if (targetNode) {
         const strokeObj = Stroke.fromJSON(stroke);
-        if (!Array.isArray(targetNode.elements)) targetNode.elements = [];
-        if (!targetNode.elements.some((s) => s.id === strokeObj.id)) {
-          targetNode.elements.push(strokeObj);
+        const page = targetNode.pdfData ? (pdfPageIndex ?? targetNode.pdfData.pageIndex) : null;
+        const strokes = page != null ? targetNode.getPdfPageStrokes(page) : targetNode.elements;
+        if (!strokes.some((s) => s.id === strokeObj.id)) {
+          if (page != null) targetNode.setPdfPageStrokes(page, [...strokes, strokeObj]);
+          else targetNode.addStroke(strokeObj);
         }
         this.updateUI();
       }
@@ -5542,12 +5943,16 @@ class NestedCanvasApp {
     // 4. Nhận xóa nét vẽ từ thiết bị khác
     this.syncClient.on('CANVAS_STROKE_ERASE', (data) => {
       if (data.clientId && (data.clientId === this.clientId || data.clientId.startsWith(this.clientId + '_'))) return;
-      const { nodeId, removedStrokeIds } = data;
+      const { nodeId, removedStrokeIds, pdfPageIndex } = data;
       if (!Array.isArray(removedStrokeIds)) return;
       const targetNode = (nodeId ? this.scene.getNode(nodeId) : null) || this.scene.root;
       if (targetNode && Array.isArray(targetNode.elements)) {
         const idSet = new Set(removedStrokeIds);
-        targetNode.elements = targetNode.elements.filter((s) => !idSet.has(s.id));
+        if (targetNode.pdfData) {
+          const page = pdfPageIndex ?? targetNode.pdfData.pageIndex;
+          targetNode.setPdfPageStrokes(page,
+            targetNode.getPdfPageStrokes(page).filter((s) => !idSet.has(s.id)));
+        } else targetNode.elements = targetNode.elements.filter((s) => !idSet.has(s.id));
         this.updateUI();
       }
     });
@@ -5772,7 +6177,11 @@ class NestedCanvasApp {
 
       if (data.stroke) {
         const stroke = Stroke.fromJSON(data.stroke);
-        targetNode.addStroke(stroke);
+        if (targetNode.pdfData) {
+          const page = data.pdfPageIndex ?? targetNode.pdfData.pageIndex;
+          const strokes = targetNode.getPdfPageStrokes(page);
+          if (!strokes.some(item => item.id === stroke.id)) targetNode.setPdfPageStrokes(page, [...strokes, stroke]);
+        } else targetNode.addStroke(stroke);
         this.updateUI();
       }
     });
@@ -5790,7 +6199,11 @@ class NestedCanvasApp {
 
       if (data.removedStrokeIds) {
         const idSet = new Set(data.removedStrokeIds);
-        targetNode.elements = targetNode.elements.filter((s) => !idSet.has(s.id));
+        if (targetNode.pdfData) {
+          const page = data.pdfPageIndex ?? targetNode.pdfData.pageIndex;
+          targetNode.setPdfPageStrokes(page,
+            targetNode.getPdfPageStrokes(page).filter((s) => !idSet.has(s.id)));
+        } else targetNode.elements = targetNode.elements.filter((s) => !idSet.has(s.id));
         this.updateUI();
       }
     });
@@ -5893,7 +6306,8 @@ class NestedCanvasApp {
       const target = (data.nodeId ? this.scene.getNode(data.nodeId) : null) || this.scene.root;
       if (target) {
         this.isApplyingRemoteSync = true;
-        target.elements = [];
+        if (target.pdfData) target.setPdfPageStrokes(data.pdfPageIndex ?? target.pdfData.pageIndex, []);
+        else target.elements = [];
         target.images = [];
         this.updateHierarchyTree();
         this.updateNodeProperties();
@@ -6205,8 +6619,8 @@ class NestedCanvasApp {
 
     if (btnEraser) {
       btnEraser.addEventListener('click', () => {
-        this.setTool('eraser-object');
-        updateMobileToolActive('eraser-object');
+        this.setTool(`eraser-${this.eraserMode || 'segment'}`);
+        updateMobileToolActive(this.activeTool);
       });
     }
 
@@ -6850,6 +7264,7 @@ class NestedCanvasApp {
 
     this.updateOcrPillPosition();
     this.updateYoutubeOverlays();
+    updatePdfOverlays(this);
   }
 
   startRenderLoop() {

@@ -45,8 +45,9 @@ impl HistoryManager {
 
     /// Reverts the most recent command on the undo stack. Returns `true` if a command was undone.
     pub fn undo(&mut self, scene: &mut SceneGraph) -> Result<bool> {
-        if let Some(mut command) = self.undo_stack.pop() {
+        if let Some(command) = self.undo_stack.last_mut() {
             command.undo(scene)?;
+            let command = self.undo_stack.pop().expect("checked nonempty undo stack");
             self.redo_stack.push(command);
             Ok(true)
         } else {
@@ -56,8 +57,9 @@ impl HistoryManager {
 
     /// Re-applies the most recently undone command on the redo stack. Returns `true` if a command was redone.
     pub fn redo(&mut self, scene: &mut SceneGraph) -> Result<bool> {
-        if let Some(mut command) = self.redo_stack.pop() {
+        if let Some(command) = self.redo_stack.last_mut() {
             command.execute(scene)?;
+            let command = self.redo_stack.pop().expect("checked nonempty redo stack");
             self.undo_stack.push(command);
             Ok(true)
         } else {
